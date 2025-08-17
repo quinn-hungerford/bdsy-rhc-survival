@@ -64,8 +64,8 @@ We implemented a multi-model survival analysis pipeline to explore treatment eff
   - `DeepSurv_CATE_Vis.Rmd` → DeepSurv visualizations (Written by Abhroneel Ghosh, edited by Quinn Hungerford)
   - `DeepSurv_Simulation.Rmd` → Simulation experiments to evaluate CSF against DeepSurv (Written by Abhroneel Ghosh, edited by Quinn Hungerford)
 - `results/`
-  - `figures/` → All generated plots (PNG outputs)
-  - `tables/` → Model outputs and summary CSVs
+  - `figures/` → All generated plots (PNG outputs), separated into `CSF/`, `RSF/`, and `DeepSurv/` folders.
+  - `tables/` → Model dataframe outputs and summary CSVs, separated into `CSF/`, `RSF/`, and `DeepSurv/` folders.
 - `presentation`
   - `final_poster.pdf` → Final research poster
   - `final_presentation.pptx` → Symposium presentation
