@@ -1,0 +1,100 @@
+---
+title: "Data_Cleaning"
+author: "Leo Hickey"
+date: "2025-06-20"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(ggplot2)
+require(gridExtra)
+require(ProbBayes)
+require(tidyverse)
+require(asmath)
+require(pseudo)
+require(survival)
+require(survminer)
+require(magrittr)
+require("readxl")
+crcblue <- "#2905a1"
+knitr::opts_chunk$set(echo = TRUE)
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize", paste0("\\", options$size,"\n\n", x, "\n\n \\normalsize"), x)
+})
+library(readr)
+```
+
+``` {r loascsv, include = FALSE}
+# Load the dataset
+rhc <- read_csv("rhc.csv")[,-1]
+
+# Load the dictionary
+dict <- read_excel("Dictionary.xlsx")
+```
+
+## Data Cleaning
+
+``` {r binary_to_1s_and_0s}
+# rhct stands for 'rhc-tidy, my the working tidy version of the data
+# Here I am setting all the binary variables to 0s and 1s
+
+rhct <- rhc %>% mutate(death = ifelse(death == "No",0,1))
+rhct %<>% mutate(sex = ifelse(sex == "Male",0,1))
+# sex 1 = female, 0 = male!
+rhct %<>% mutate(dth30 = ifelse(dth30 == "No",0,1))
+rhct %<>% mutate(swang1 = ifelse(swang1 == "No RHC",0,1))
+# No RHC = 1, RHC = 1!
+rhct %<>% mutate(dnr1 = ifelse(dnr1 == "No",0,1))
+rhct %<>% mutate(resp = ifelse(resp == "No",0,1))
+rhct %<>% mutate(card = ifelse(card == "No",0,1))
+rhct %<>% mutate(neuro = ifelse(neuro == "No",0,1))
+rhct %<>% mutate(gastr = ifelse(gastr == "No",0,1))
+rhct %<>% mutate(rel = ifelse(rel == "No",0,1))
+rhct %<>% mutate(meta = ifelse(meta == "No",0,1))
+rhct %<>% mutate(hema = ifelse(hema == "No",0,1))
+rhct %<>% mutate(seps = ifelse(seps == "No",0,1))
+rhct %<>% mutate(trauma = ifelse(trauma == "No",0,1))
+rhct %<>% mutate(ortho = ifelse(ortho == "No",0,1))
+
+rhct %<>% mutate(adld3p = NULL) %<>% mutate(urin1 = NULL)
+```
+
+```{r columnCleaner}
+# Group important columns together at the front and rename a few relevant confusing column names
+rhct %<>% relocate(dth30, t3d30, .before = death) %<>% relocate(swang1) %<>% relocate(ptid) %<>% mutate(survtime = ifelse(death == 1, dthdte - sadmdte, NA)) %<>% relocate(survtime, .after = death)
+```
+
+
+``` {r tidysaver, EVAL = FALSE}
+# If you choose to change this tidying code, use this function to save the new csv to your device
+write.csv(rhct, file = "rhc_tidy_leo.csv", row.names = FALSE)
+```
+
+
+## Assorted Other Things
+
+``` {r is_the_survival_probability_estimate_good}
+rhct %>%
+  mutate(deathprob_bin = cut(surv2md1, breaks = 75)) %>% 
+  group_by(deathprob_bin) %>%
+  summarise(
+    proportion_dead = 1-mean(death)
+  ) %>%
+  ggplot(aes(x = deathprob_bin, y = proportion_dead)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    x = "Probability Group",
+    y = "Proportion Dead",
+    title = "Proportion of Deaths by Predicted 2-Month Survival Probabilty"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 6.5))
+
+```
+
+
+
+
