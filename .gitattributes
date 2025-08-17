@@ -1,0 +1,3 @@
+# Tell GitHub Linguist how to classify files
+*.Rmd linguist-language=R
+*.ipynb linguist-language=Python
