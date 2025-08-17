@@ -1,0 +1,7 @@
+"Horizon","Target","Mean_C_Index"
+30,"Survival Probability",0.4806
+60,"Survival Probability",0.5235
+90,"Survival Probability",0.534
+120,"Survival Probability",0.5432
+150,"Survival Probability",0.5588
+180,"Survival Probability",0.4987
