@@ -1,0 +1,692 @@
+---
+title: "DeepSurv for HTE Survival Analysis of RHC"
+author: "Abhroneel Ghosh"
+date: "2025-07-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+Original R code developed by Abhroneel Ghosh.
+R Markdown conversion, code cleanup, figure generation, and model comparison by Quinn Hungerford.
+
+## Loading libraries and data
+
+```{r libraries}
+# Importing libraries
+library(tidyverse)
+library(Hmisc)
+library(reshape2)
+library(mice)
+library(caret)
+library(readr)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(tableone)
+library(knitr)
+library(kableExtra)
+library(MASS)
+library(tidymodels)
+library(pracma)
+library(survival)
+library(survivalmodels)
+library(cmprsk)
+library(riskRegression)
+library(survminer)
+library(ggplot2)
+library(ggfortify)
+library(gridExtra)
+library(dnn)
+```
+
+```{r data}
+rhc_imputed <- read_csv("rhc_imputed.csv")[, -1]
+rhc_imputed <- read_csv("rhc_uncensored.csv")[, -1]
+dict <- read_excel("Dictionary.xlsx")
+analysis_date <- "2025-06-25"
+```
+
+## Data Cleaning
+
+```{r}
+# Changing string categories to factors
+data <- rhc_imputed
+
+for (i in 1:length(data$ca))
+{
+  if (data$ca[i]=="No")
+    data$ca[i]=0
+  if (data$ca[i]=="Yes")
+    data$ca[i]=1
+  if (data$ca[i]=="Metastatic")
+    data$ca[i]=2
+}
+
+for (i in 1:length(data$race))
+{
+  if (data$race[i]=="black")
+    data$race[i]=0
+  if (data$race[i]=="white")
+    data$race[i]=1
+  if (data$race[i]=="other")
+    data$race[i]=2
+}
+for (i in 1:length(data$income))
+{
+  if (data$income[i]=="Under $11k")
+    data$income[i]=0
+  if (data$income[i]=="$11-$25k")
+    data$income[i]=1
+  if (data$income[i]=="$25-$50k")
+    data$income[i]=2
+  if (data$income[i]=="> $50k")
+    data$income[i]=3
+}
+for (i in 1:length(data$ninsclas))
+{
+  if (data$ninsclas[i]=="Medicaid")
+    data$ninsclas[i]=1
+  if (data$ninsclas[i]=="Medicare")
+    data$ninsclas[i]=2
+  if (data$ninsclas[i]=="Medicare & Medicaid")
+    data$ninsclas[i]=3
+  if (data$ninsclas[i]=="No insurance")
+    data$ninsclas[i]=4
+  if (data$ninsclas[i]=="Private")
+    data$ninsclas[i]=5
+  if (data$ninsclas[i]=="Private & Medicare")
+    data$ninsclas[i]=6
+}
+
+ninsclas_labels <- c("Medicaid", "Medicare", "Medicare & Medicaid", 
+                     "No insurance", "Private", "Private & Medicare")
+
+for (i in 1:length(data$cat1))
+{
+  if (data$cat1[i]=="ARF")
+    data$cat1[i]=1
+  if (data$cat1[i]=="CHF")
+    data$cat1[i]=2
+  if (data$cat1[i]=="Cirrhosis")
+    data$cat1[i]=3
+  if (data$cat1[i]=="Colon Cancer")
+    data$cat1[i]=4
+  if (data$cat1[i]=="Coma")
+    data$cat1[i]=5
+  if (data$cat1[i]=="COPD")
+    data$cat1[i]=6
+  if (data$cat1[i]=="Lung Cancer")
+    data$cat1[i]=7
+  if (data$cat1[i]=="MOSF w/Maligncy")
+    data$cat1[i]=8
+  if (data$cat1[i]=="MOSF w/Sepsis")
+    data$cat1[i]=9
+  
+}
+
+for (i in 1:length(data$cat2))
+{
+  if (is.na(data$cat2[i])==TRUE)
+    data$cat2[i]=0
+  if (data$cat2[i]=="ARF")
+    data$cat2[i]=1
+  if (data$cat2[i]=="CHF")
+    data$cat2[i]=2
+  if (data$cat2[i]=="Cirrhosis")
+    data$cat2[i]=3
+  if (data$cat2[i]=="Colon Cancer")
+    data$cat2[i]=4
+  if (data$cat2[i]=="Coma")
+    data$cat2[i]=5
+  if (data$cat2[i]=="COPD")
+    data$cat2[i]=6
+  if (data$cat2[i]=="Lung Cancer")
+    data$cat2[i]=7
+  if (data$cat2[i]=="MOSF w/Maligncy")
+    data$cat2[i]=8
+  if (data$cat2[i]=="MOSF w/Sepsis")
+    data$cat2[i]=9
+  
+}
+
+cat1_labels <- c("ARF", "CHF", "Cirrhosis", "Colon Cancer", "Coma", "COPD", 
+                 "Lung Cancer", "MOSF w Maligncy", "MOSF w Sepsis")
+
+data$ca <- as.factor(data$ca)
+data$death<- as.factor(data$death)
+data$dth30<- as.factor(data$dth30)
+data$swang1<- as.factor(data$swang1)
+data$dnr1<- as.factor(data$dnr1)
+data$resp<- as.factor(data$resp)
+data$card<- as.factor(data$card)
+data$neuro<- as.factor(data$neuro)
+data$gastr<- as.factor(data$gastr)
+data$rel<- as.factor(data$rel)
+data$meta<- as.factor(data$meta)
+data$hema<- as.factor(data$hema)
+data$seps<- as.factor(data$seps)
+data$trauma<- as.factor(data$trauma)
+data$ortho<- as.factor(data$ortho)
+data$sex<- as.factor(data$sex)
+
+data$race <- as.factor(data$race)
+data$income <- as.factor(data$income)
+data$ninsclas <- as.factor(data$ninsclas)
+data$cat1 <- as.factor(data$cat1)
+data$cat2 <- as.factor(data$cat2)
+
+rhc_imputed <- data
+```
+
+## Creating Survival Outcomes
+
+```{r}
+outcome_vars <- c("sadmdte", "dschdte", "dthdte", "lstctdte", "dth30", "t3d30", "death", "survtime", "censor", "SurvivalTime")
+
+survtime <- ifelse(is.na(rhc_imputed$dthdte), 
+                   pmax(rhc_imputed$lstctdte, rhc_imputed$dschdte) - rhc_imputed$sadmdte,
+                   rhc_imputed$dthdte - rhc_imputed$sadmdte)
+
+survevent <- as.integer(!(is.na(rhc_imputed$dthdte)))
+
+survtime30 <- pmin(30, survtime)
+survevent30 <- ifelse(survtime <= 30, survevent, 0)
+
+survtime90 <- pmin(90, survtime)
+survevent90 <- ifelse(survtime <= 90, survevent, 0)
+
+survtime180 <- pmin(180, survtime)
+survevent180 <- ifelse(survtime <= 180, survevent, 0)
+
+survtime180 <- rhc_imputed$SurvivalTime
+survevent180 <- rhc_imputed$death
+```
+
+## Fitting DeepSurv
+
+```{r}
+data <- rhc_imputed[setdiff(colnames(rhc_imputed), c(outcome_vars, "ptid"))]
+
+colnames(data)
+
+set.seed(102)
+
+# Rename and standardize column types
+dict <- dict %>%
+  rename(variable = 1, definition = 2, type = 3) %>%
+  filter(variable %in% colnames(data)) %>%
+  mutate(type = case_when(
+    type == "Binary" ~ "categorical",
+    TRUE ~ tolower(type)
+  ))
+
+# Create variable lists for five covariates as example
+cont_vars <- dict %>% filter(type == "continuous") # %>% slice(c(5, 8:11)) %>% pull(variable) 
+cont_vars <- as.vector(cont_vars$variable)
+cat_vars  <- dict %>% filter(type == "categorical") # %>% slice_head(n=5) %>% pull(variable)
+cat_vars <- as.vector(cat_vars$variable)
+
+setdiff(colnames(data), union(cont_vars, cat_vars))
+cat_vars <- c(cat_vars, "relhx", "rel")
+
+(length(cont_vars) + length(cat_vars)) == length(colnames(data))
+
+data_cont <- data %>%
+  dplyr::select(all_of(cont_vars))
+
+data_cat <- data %>%
+  dplyr::select(all_of(cat_vars))
+
+data_cont <- data.frame(lapply(data_cont, function(col) {
+  if (is.character(col) || is.factor(col)) {
+    return(as.numeric(as.character(col)))
+  }
+  return(col)
+}))
+
+data_cont <- as.data.frame(scale(data_cont, center=TRUE, scale=TRUE))
+
+data <- bind_cols(data_cont, data_cat)
+
+data$time <- survtime180
+data$event <- as.numeric(survevent180)
+dim(data)
+colnames(data)
+
+cat("Rows in data:", nrow(data), "\n")
+cat("Cols in data (including time/event+features):", ncol(data), "\n")
+
+# Subsetting zero population
+
+rhc <- read_csv("rhc.csv")[, -1]
+
+rhc_g <- rhc %>%
+  mutate(any_zero = as.integer(if_any(c(hrt1, meanbp1, resp1), ~ . == 0)))
+
+table(rhc_g$any_zero)
+
+data <- data[(rhc_g$any_zero == 1), ]
+```
+
+# Using Survivalmodels Library
+
+```{r}
+#installing pycox
+reticulate::install_miniconda()
+reticulate::use_miniconda("r-reticulate", required = TRUE)
+
+reticulate::py_install(c("pycox", "torch", "torchtuples"), pip = TRUE)
+
+#Fitting deepsurv
+
+set.seed(102)
+
+x_train <- model.matrix(Surv(time, event) ~ . - 1, data = data)
+y_train <- Surv(data$time, data$event)
+
+x_train <- as.data.frame(x_train)
+dup_indices <- which(names(x_train) == "resp1")
+names(x_train)[dup_indices[2]] <- "resp11"
+dup_indices <- which(names(x_train) == "hema1")
+names(x_train)[dup_indices[2]] <- "hema11"
+
+y_train <- y_train
+
+deepsurv_model2 <- deepsurv(x = x_train,
+                            y = y_train,
+                            #data = data,
+                            activation = "selu",
+                            num_nodes = c(44,1),
+                            batch_norm = TRUE,
+                            dropout = 0.255,
+                            epochs = 50,
+                            optimizer = 'adam',
+                            lr = 0.047,
+                            lr_decay = 0.002573,
+                            alpha = 0.859,
+                            lambd = 8.120)
+
+summary(deepsurv_model2)
+
+# Cross validating model 2
+
+set.seed(42)
+
+k_folds = 5
+folds <- createFolds(data$event, k = k_folds, list = TRUE, returnTrain = FALSE)
+
+cindex_list2 <- numeric(k_folds)
+trainindex_list2 <- numeric(k_folds)
+
+for (i in 1:k_folds) {
+  cat("Fold", i, "\n")
+  
+  # Split data
+  test_idx <- folds[[i]]
+  train_data <- data[-test_idx, ]
+  test_data  <- data[test_idx, ]
+  
+  #x_train <- data[, 1:52]
+  x_train <- model.matrix(Surv(time, event) ~ . - 1, data = train_data)
+  y_train <- Surv(train_data$time, train_data$event)
+  x_train <- as.data.frame(x_train)
+  
+  dup_indices <- which(names(x_train) == "resp1")
+  names(x_train)[dup_indices[2]] <- "resp11"
+  dup_indices <- which(names(x_train) == "hema1")
+  names(x_train)[dup_indices[2]] <- "hema11"
+  
+  # Fitting deepSurv
+  model <- deepsurv(x = x_train,
+                    y = y_train,
+                    #data = data,
+                    activation = "selu",
+                    num_nodes = c(44, 1),
+                    batch_norm = TRUE,
+                    dropout = 0.255,
+                    epochs = 50,
+                    optimizer = 'adam',
+                    lr = 0.047,
+                    lr_decay = 0.002573,
+                    alpha = 0.859,
+                    lambd = 8.120)
+  
+  x_test <- model.matrix(Surv(time, event) ~ . - 1, data = test_data)
+  y_test <- Surv(test_data$time, test_data$event)
+  x_test <- as.data.frame(x_test)
+  
+  dup_indices <- which(names(x_test) == "resp1")
+  names(x_test)[dup_indices[2]] <- "resp11"
+  dup_indices <- which(names(x_test) == "hema1")
+  names(x_test)[dup_indices[2]] <- "hema11"
+  
+  risk_scores <- predict(model, newdata = x_test, type = "risk")
+  
+  test_surv <- Surv(test_data$time, test_data$event)
+  
+  cidx <- concordance(test_surv ~ as.numeric(-risk_scores))$concordance
+  cindex_list2[i] <- cidx
+  
+  train_surv <- Surv(train_data$time, train_data$event)
+  risk_scores <- predict(model, newdata = x_train, type = "risk")
+  cidx <- concordance(train_surv ~ as.numeric(-risk_scores))$concordance
+  trainindex_list2[i] <- cidx
+  
+}
+
+# Adding the cindex of the final model
+
+x_train <- model.matrix(Surv(time, event) ~ . - 1, data = data)
+y_train <- Surv(data$time, data$event)
+
+x_train <- as.data.frame(x_train)
+dup_indices <- which(names(x_train) == "resp1")
+names(x_train)[dup_indices[2]] <- "resp11"
+dup_indices <- which(names(x_train) == "hema1")
+names(x_train)[dup_indices[2]] <- "hema11"
+
+risk_scores <- predict(deepsurv_model2, newdata = x_train, type = "risk")
+cidx <- concordance(y_train ~ as.numeric(-risk_scores))$concordance
+
+cindex_list2 <- c(cindex_list2, cidx)
+trainindex_list2 <- c(trainindex_list2, cidx)
+
+# Viewing the lists
+
+cindex_list2
+trainindex_list2
+```
+
+## Estimating Heterogeneity - Creating Hypothetical Populations
+
+```{r}
+hypo_0 <- data[, 1:52]
+hypo_0$swang1 <- 0
+hypo_0 <- model.matrix( ~ . - 1, data = hypo_0)
+hypo_0 <- as.data.frame(hypo_0)
+dup_indices <- which(names(hypo_0) == "resp1")
+names(hypo_0)[dup_indices[2]] <- "resp11"
+dup_indices <- which(names(hypo_0) == "hema1")
+names(hypo_0)[dup_indices[2]] <- "hema11"
+names(hypo_0)[(names(hypo_0) == "swang1")] <- "swang11"
+
+hypo_0_risk_2 <- predict(deepsurv_model2, hypo_0, type = 'risk')
+
+hypo_1 <- data[, 1:52]
+hypo_1$swang1 <- 1
+hypo_1 <- model.matrix( ~ . - 1, data = hypo_1)
+hypo_1 <- as.data.frame(hypo_1)
+dup_indices <- which(names(hypo_1) == "resp1")
+names(hypo_1)[dup_indices[2]] <- "resp11"
+dup_indices <- which(names(hypo_1) == "hema1")
+names(hypo_1)[dup_indices[2]] <- "hema11"
+names(hypo_1)[(names(hypo_1) == "swang1")] <- "swang11"
+
+hypo_1_risk_2 <- predict(deepsurv_model2, hypo_1, type = 'risk')
+```
+
+## Relative Risk Ratio
+
+```{r}
+risk_est_0 <- predict(deepsurv_model2, newdata = hypo_0, type = "risk")
+
+risk_est_1 <- predict(deepsurv_model2, newdata = hypo_1, type = "risk")
+
+cate_riskratio_2 <- as.numeric(risk_est_1/risk_est_0)
+
+summary(cate_riskratio_2)
+table(cate_riskratio_2 == 1)
+hist(cate_riskratio_2)
+plot(density(cate_riskratio_2))
+```
+
+## Quantile Survival
+
+```{r}
+quant <- 0.9
+
+survival_quant02 <- c()
+survival_quant12 <- c()
+
+surv_est0 <- predict(deepsurv_model2, hypo_0, type = 'survival')
+
+for (i in 1:dim(hypo_0)[1]) {
+  data_temp <- data.frame(time = seq(2,(dim(surv_est0)[2]+1)), 
+                          surv = as.vector(surv_est0[i, ]))
+  t0 <- approx(data_temp$surv, data_temp$time, xout = quant)$y
+  survival_quant02 <- c(survival_quant02, t0)
+}
+
+surv_est1 <- predict(deepsurv_model2, hypo_1, type = 'survival')
+
+for (i in 1:dim(hypo_1)[1]) {
+  data_temp <- data.frame(time = seq(2,(dim(surv_est1)[2]+1)), 
+                          surv = as.vector(surv_est1[i, ]))
+  t1 <- approx(data_temp$surv, data_temp$time, xout = quant)$y
+  survival_quant12 <- c(survival_quant12, t1)
+}
+
+cate_survivalquant_2 <- survival_quant12 - survival_quant02
+
+summary(cate_survivalquant_2)
+table(cate_survivalquant_2 == 0)
+hist(cate_survivalquant_2)
+plot(density(cate_survivalquant_2, na.rm = TRUE))
+```
+
+## Probability of Surviving Up to 30 Days
+
+```{r}
+surv_est0 <- predict(deepsurv_model2, hypo_0, type = 'survival', se.fit = TRUE)
+surv_est0 <- as.data.frame(surv_est0)
+prob_30_0 <- surv_est0[, c(dim(surv_est0)[2])]
+
+surv_est1 <- predict(deepsurv_model2, hypo_1, type = 'survival')
+surv_est1 <- as.data.frame(surv_est1)
+prob_30_1 <- surv_est1[, c(dim(surv_est1)[2])]
+
+cate_prob_days_2 <- prob_30_1 - prob_30_0
+
+summary(cate_prob_days_2)
+table(cate_prob_days_2 == 0)
+hist(cate_prob_days_2, breaks = 50)
+plot(density(cate_prob_days_2))
+```
+
+## Restricted Mean Survival Time
+
+```{r}
+surv_est0 <- predict(deepsurv_model2, hypo_0, type = 'survival')
+rmst_values_0 <- apply(surv_est0, 1, function(surv) trapz(seq(2, (dim(surv_est0)[2]+1)), surv))
+rmst_0 <- mean(rmst_values_0)
+
+surv_est1 <- predict(deepsurv_model2, hypo_1, type = 'survival')
+rmst_values_1 <- apply(surv_est1, 1, function(surv) trapz(seq(2, (dim(surv_est0)[2]+1)), surv))
+rmst_1 <- mean(rmst_values_1)
+
+cate_rmst_2 <- rmst_values_1 - rmst_values_0
+
+summary(cate_rmst_2)
+table(cate_rmst_2 == 0)
+hist(cate_rmst_2)
+plot(density(cate_rmst_2))
+```
+
+## Generating Plots
+
+```{r}
+# Treatment reccomendations
+
+df_plot <- data
+
+df_plot$treat_hat2 <- as.numeric(hypo_1_risk_2 < hypo_0_risk_2)
+df_plot$assigned_treat_hat2 <- as.numeric(df_plot$swang1 == df_plot$treat_hat2)
+
+# Generating the Kaplan Meier Curves
+
+surv_Object <- Surv(df_plot$time, df_plot$event)
+comb_fit <- survfit(formula = surv_Object ~ assigned_treat_hat2, data = df_plot)
+summary(comb_fit)
+
+plot <- ggsurvplot(comb_fit, data = df_plot, conf.int = TRUE, pval = TRUE, #fun = "event",
+                   legend.labs = c("Anti-recommended Treatment", "Recommended Treatment"), legend.title = "Follows DeepSurv Recommendations",
+                   legend = c(0.8, 0.2),
+                   xlab = "Time (days from admission)", title = "KM Survival Curve - DeepSurv Treatment Recommendations")
+
+plot
+
+ggsave("deepsurv_recco_180_day_quinn.png", 
+       plot$plot, width = 8, height = 6)
+
+
+# CATEs and Model 2
+
+df_plot <- data.frame(val = cate_rmst_2)
+plot <- df_plot %>%
+  ggplot( aes(x = val)) +
+  geom_histogram(binwidth = 1, fill = "#b3cde0", color = "#005b96") +
+  geom_vline(xintercept = 0) +
+  scale_x_continuous(name = "Time (days)", breaks = seq(-40,10,20)) +
+  ggtitle("CATE - diff in RMST (90 days)") +
+  theme_pubclean()
+
+plot
+
+ggsave("rmst_180_day_quinn.png", 
+       plot, width = 8, height = 6)
+
+# CATEs
+
+df_plot <- data.frame(riskratio = cate_riskratio_2, 
+                      survivalprobx3 = cate_prob_days_2*3, 
+                      survivalquant = cate_survivalquant_2, 
+                      rmst = cate_rmst_2)
+
+plot <- df_plot %>%
+  pivot_longer(cols = everything(), names_to = "CATE", values_to = "val") %>%
+  ggplot(aes(x = val, color = CATE, fill = CATE)) +
+  geom_histogram(binwidth = 0.1) +
+  geom_vline(xintercept = 0) +
+  geom_vline(xintercept = 1) +
+  scale_x_continuous(name = "Time (days)", breaks = seq(-3,2,0.5), limits = c(-3, 2)) +
+  scale_fill_brewer(palette = "Blues", direction = -1) +
+  scale_color_brewer(palette = "Purples", direction = -1) +
+  ggtitle("CATE distributions - 90 days") +
+  theme_light() +
+  facet_wrap(~CATE)
+
+plot
+
+ggsave("cates_180_day_quinn.png", plot, width = 10, height = 8)
+
+
+# Plotting Survival Curves
+
+days = 180
+
+timepts <- as.numeric(colnames(surv_est0))
+
+q0 <- min(cate_rmst_2)
+q25 <- quantile(cate_rmst_2, 0.25)
+q50 <- quantile(cate_rmst_2, 0.5)
+q75 <- quantile(cate_rmst_2, 0.75)
+
+index <- c(which.min(abs(cate_rmst_2 - q0)),
+           which.min(abs(cate_rmst_2 - q25)),
+           which.min(abs(cate_rmst_2 - q50)),
+           which.min(abs(cate_rmst_2 - q75)),
+           which.max(cate_rmst_2))
+
+val <- c(qmin = as.vector(surv_est0[index[1],]),
+         q25 = as.vector(surv_est0[index[2],]),
+         q50 = as.vector(surv_est0[index[3],]),
+         q75 = as.vector(surv_est0[index[4],]),
+         qmax = as.vector(surv_est0[index[5],]))
+
+val <- c(val,
+         qmin = as.vector(surv_est1[index[1],]),
+         q25 = as.vector(surv_est1[index[2],]),
+         q50 = as.vector(surv_est1[index[3],]),
+         q75 = as.vector(surv_est1[index[4],]),
+         qmax = as.vector(surv_est1[index[5],]))
+
+time <- rep(timepts, 10)
+
+rhc <- c(rep('no rhc', (length(timepts))*5), rep('rhc', (length(timepts))*5))
+
+quantile <- c(rep('1',length(timepts)),
+              rep('25',length(timepts)),
+              rep('50',length(timepts)),
+              rep('75',length(timepts)),
+              rep('99',length(timepts)))
+quantile <- rep(quantile, 2)
+
+censor <- c((timepts == data$time[index[1]]),
+            (timepts == data$time[index[2]]),
+            (timepts == data$time[index[3]]),
+            (timepts == data$time[index[4]]),
+            (timepts == data$time[index[5]]))
+censor <- rep(censor, 2)
+
+swang <- c(rep((data$swang1[index[1]] == 1),length(timepts)),
+           rep((data$swang1[index[2]] == 1),length(timepts)),
+           rep((data$swang1[index[3]] == 1),length(timepts)),
+           rep((data$swang1[index[4]] == 1),length(timepts)),
+           rep((data$swang1[index[5]] == 1),length(timepts)))
+swang <- rep(swang, 2)
+
+df_plot <- data.frame(val, time, quantile, censor, rhc, swang)
+
+
+plot <- ggplot(data = df_plot, aes(x = time, y = val, color = quantile)) +
+  geom_step() +
+  scale_color_brewer(palette = "Blues") +
+  geom_point(data = filter(df_plot, censor),
+             shape = 1, size = 2, color = "black") +
+  geom_point(data = filter(df_plot, (censor & swang) == TRUE),
+             shape = 3, size = 2, color = 'black') +
+  scale_y_continuous(name = "Survival Probability",
+                     limits = c(0,1),
+                     breaks = seq(0,1,0.2)) +
+  scale_x_continuous(name = "Time (in days)",
+                     breaks = seq(0,days,20)) +
+  ggtitle("Predicted Survival - Hypothetical Outcomes", subtitle = "Stratified by CATE (RMST)") +
+  theme_light() +
+  facet_wrap(~rhc)
+
+plot
+
+ggsave("survival_180_day_quinn.png", plot, width = 10, height = 6)
+```
+
+## Generating Tables
+
+```{r}
+# Table 1
+
+fold <- c("Fold 1", "Fold 2", "Fold 3", "Fold 4", "Fold 5", "Final")
+c_indices <- data.frame(Fold = fold, train = trainindex_list2, test = cindex_list2)
+
+write.csv(c_indices, file = "C:/Users/home/Dropbox/BDSY project - Causal Inference/Individual-Folders/Abhroneel Ghosh/DeepSurv_Results/180_day/cindices_180_day_gabrielle.csv", row.names = FALSE)
+
+
+# Table 2
+
+results <- data.frame(risk_rhc = hypo_1_risk_2,
+                      risk_norhc = hypo_0_risk_2,
+                      risk_ratio = cate_riskratio_2,
+                      survival_quant = cate_survivalquant_2,
+                      survival_prob = cate_prob_days_2,
+                      rmst = cate_rmst_2)
+
+write.csv(results, file = "results_180_day_quinn.csv", row.names = FALSE)
+```
+
+
+
+
+
+
