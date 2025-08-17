@@ -1,0 +1,747 @@
+---
+title: "Causal Survival Random Forests for HTE Survival Analysis of RHC"
+author: "Quinn Hungerford and Isabella Summe"
+date: "2025-07-31"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loading libraries
+
+```{r}
+library(grf)
+library(ggplot2)
+library(survival)
+library(survcomp)
+library(pec)
+library(tibble)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(rpart)
+library(rpart.plot)
+```
+
+# Importing Data, Cleaning, and Setting Dummy/Factored Variables
+
+```{r}
+# Import data
+data <- read.csv("rhc_imputed.csv")
+
+# Keep only rows with complete outcome information
+data_clean <- data[!is.na(data$SurvivalTime) & !is.na(data$death), ]
+
+# Define treatment and survival outcome
+W <- as.numeric(data_clean$swang1)
+Y <- data_clean$SurvivalTime
+D <- data_clean$death
+
+# Define covariates
+exclude <- c("ptid", "swang1", "dthdte", "dschdte", "lstctdte", "sadmdte",
+             "survtime", "death", "SurvivalTime", "censor", "dth30", "t3d30")
+X_temp <- data_clean[, !(names(data_clean) %in% exclude)]
+
+# Factor key categorical variables
+X_temp$sex <- as.factor(X_temp$sex)
+X_temp$race <- as.factor(X_temp$race)
+X_temp$income <- as.factor(X_temp$income)
+X_temp$cat1 <- as.factor(X_temp$cat1)
+X_temp$ca <- as.factor(X_temp$ca)
+
+# Convert to dummy variables
+X <- model.matrix(~ . - 1, data = X_temp)
+```
+
+# Old Data Cleaning for Manual Survival Time Calculation (If Inexperienced With Imputing/Censoring Survival Data)
+
+```{r}
+# Do not run if you have the cleaned/imputed datasets, can also impute them differently from our approach
+
+# # Import data
+# data <- read.csv("rhc_imputed.csv")
+# #data <- read.csv("new_data.csv")
+# 
+# 
+# # Adjusting variables
+# 
+# # Recalculate survival time
+# 
+# data$survtime_new <- ifelse(!is.na(data$dthdte),  # Check if they have a date of death
+#                             data$dthdte - data$sadmdte, # If true (they died), get time from admission to death
+#                             data$lstctdte - data$sadmdte) # If false (didn't), get time from admission to the last known contact date
+# 
+# # Recalculate event indicator -- if true/dead, assign 1 and if false/censored, assign 0
+# 
+# data$death_new <- ifelse(!is.na(data$dthdte), 1, 0)  # Check if they have a non-missing date of death
+# 
+# # Clean data so no NAs
+# data_clean <- data[!is.na(data$survtime_new) & !is.na(data$death_new), ]
+# 
+# # Treatment indicator W (RHC 1 or no RHC 0)
+# W <- as.numeric(data_clean$swang1)
+# 
+# # Event time Y (survival time) and event type D (death)
+# Y <- data_clean$survtime_new
+# D <- data_clean$death_new
+# 
+# # Non-covariates
+# 
+# exclude <- c("ptid", "swang1", "dthdte", "dschdte", "lstctdte", "sadmdte",
+#               "survtime", "death", "survtime_new", "death_new")
+# 
+# # Create covariate subset
+# 
+# X_temp <- data_clean[, !(names(data_clean) %in% exclude)]
+# 
+# # Make sure important covariates are factored
+# 
+# X_temp$sex <- as.factor(X_temp$sex)
+# X_temp$race <- as.factor(X_temp$race)
+# X_temp$income <- as.factor(X_temp$income)
+# X_temp$cat1 <- as.factor(X_temp$cat1)
+# X_temp$ca <- as.factor(X_temp$ca)
+# 
+# # Convert all variables to dummy variables for the model
+# cc_idx <- complete.cases(X_temp)
+# X <- model.matrix(~ . - 1, data = X_temp[cc_idx, ])
+# Y <- Y[cc_idx]
+# D <- D[cc_idx]
+# W <- W[cc_idx]
+```
+
+# Checking for Ideal Truncation Time (Ultimately Decided on 180-Day by Evaluated Each Thoroughly)
+
+```{r}
+hist(Y[D == 1], main = "Event vs. Censored", xlab = "", ylim = c(0, 100), xlim = c(0, 200))
+hist(Y[D == 0], col = adjustcolor("red", 0.5), add = TRUE)
+
+legend("topright", c("Event", "Censored"),
+col = c("gray", adjustcolor("red", 0.5)),
+lwd = 4)
+abline(v = 720, lty = 2)
+```
+
+# Create CSF Models - Survival Probability: 30 days, 60 days, 90 days, 120 days, 150 days, 180 days
+
+```{r}
+csf_30_sb <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 30,
+  num.trees = 1000,
+  target = "survival.probability",
+  seed = 2025
+)
+
+csf_60_sb <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 60,
+  num.trees = 1000,
+  target = "survival.probability",
+  seed = 2025
+)
+
+csf_90_sb <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 90,
+  num.trees = 1000,
+  target = "survival.probability",
+  seed = 2025
+)
+
+csf_120_sb <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 120,
+  num.trees = 1000,
+  target = "survival.probability",
+  seed = 2025
+)
+
+csf_150_sb <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 150,
+  num.trees = 1000,
+  target = "survival.probability",
+  seed = 2025
+)
+
+csf_180_sb <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 180,
+  num.trees = 1000,
+  target = "survival.probability",
+  seed = 2025
+)
+```
+
+# Create CSF Models - RMST: 30 days, 60 days, 90 days, 120 days, 150 days, 180 days
+
+```{r}
+csf_30_rmst <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 30,
+  num.trees = 1000,
+  target = "RMST",
+  seed = 2025
+)
+
+csf_60_rmst <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 60,
+  num.trees = 1000,
+  target = "RMST",
+  seed = 2025
+)
+
+csf_90_rmst <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 90,
+  num.trees = 1000,
+  target = "RMST",
+  seed = 2025
+)
+
+csf_120_rmst <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 120,
+  num.trees = 1000,
+  target = "RMST",
+  seed = 2025
+)
+
+csf_150_rmst <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 150,
+  num.trees = 1000,
+  target = "RMST",
+  seed = 2025
+)
+
+csf_180_rmst <- causal_survival_forest(
+  X = X,
+  Y = Y,
+  D = D,
+  W = W,
+  horizon = 180,
+  num.trees = 1000,
+  target = "RMST",
+  seed = 2025
+)
+```
+
+# Generate CATE Values for CSF RMST and Survival Probability Models from 30-180 Days
+
+```{r}
+# Helper function to extract summary stats from a prediction vector
+get_summary <- function(preds, horizon, target_type) {
+  s <- summary(preds)
+  tibble(
+    Horizon = horizon,
+    Target = target_type,
+    Min = s["Min."],
+    Q1 = s["1st Qu."],
+    Median = s["Median"],
+    Mean = s["Mean"],
+    Q3 = s["3rd Qu."],
+    Max = s["Max."]
+  )
+}
+
+# Survival probability
+cate_summary_sp <- bind_rows(
+  get_summary(predict(csf_30_sb)$predictions, 30, "Survival Probability"),
+  get_summary(predict(csf_60_sb)$predictions, 60, "Survival Probability"),
+  get_summary(predict(csf_90_sb)$predictions, 90, "Survival Probability"),
+  get_summary(predict(csf_120_sb)$predictions, 120, "Survival Probability"),
+  get_summary(predict(csf_150_sb)$predictions, 150, "Survival Probability"),
+  get_summary(predict(csf_180_sb)$predictions, 180, "Survival Probability")
+)
+
+# RMST
+cate_summary_rmst <- bind_rows(
+  get_summary(predict(csf_30_rmst)$predictions, 30, "RMST"),
+  get_summary(predict(csf_60_rmst)$predictions, 60, "RMST"),
+  get_summary(predict(csf_90_rmst)$predictions, 90, "RMST"),
+  get_summary(predict(csf_120_rmst)$predictions, 120, "RMST"),
+  get_summary(predict(csf_150_rmst)$predictions, 150, "RMST"),
+  get_summary(predict(csf_180_rmst)$predictions, 180, "RMST")
+)
+```
+
+# Generate a Summary Table of CATEs for CSF Survival Probability Models
+
+```{r}
+cate_summary_sp
+write.csv(cate_summary_sp, "cate_summary_sp.csv", row.names = FALSE)
+```
+
+# Generate a Summary Table of CATEs for CSF RMST Models
+
+```{r}
+cate_summary_rmst
+write.csv(cate_summary_rmst, "cate_summary_rmst.csv", row.names = FALSE)
+```
+
+# Predict All CATES for CSF RMST and Survival Probability Models
+
+```{r}
+# Predict all CATEs
+cate_estimates_sp <- list(
+  `30` = predict(csf_30_sb)$predictions,
+  `60` = predict(csf_60_sb)$predictions,
+  `90` = predict(csf_90_sb)$predictions,
+  `120` = predict(csf_120_sb)$predictions,
+  `150` = predict(csf_150_sb)$predictions,
+  `180` = predict(csf_180_sb)$predictions
+)
+
+cate_estimates_rmst <- list(
+  `30` = predict(csf_30_rmst)$predictions,
+  `60` = predict(csf_60_rmst)$predictions,
+  `90` = predict(csf_90_rmst)$predictions,
+  `120` = predict(csf_120_rmst)$predictions,
+  `150` = predict(csf_150_rmst)$predictions,
+  `180` = predict(csf_180_rmst)$predictions
+)
+```
+
+# CATE Histograms for All Survival Probability CSF Models
+
+```{r}
+# Plot histograms for Survival Probabilty
+par(mfrow = c(3, 2))
+
+# Survival probability
+for (h in names(cate_estimates_sp)) {
+  hist(cate_estimates_sp[[h]], breaks = 50,
+       main = paste("CATEs: Survival Prob. (", h, "-Day)", sep = ""),
+       xlab = paste("Effect of RHC on", h, "Day Survival Probability"),
+       col = "lightblue", border = "white")
+}
+```
+
+# CATE Histograms for All RMST CSF Models
+
+```{r}
+# Plot histograms for RMST
+par(mfrow = c(3, 2))
+
+for (h in names(cate_estimates_rmst)) {
+  hist(cate_estimates_rmst[[h]], breaks = 50,
+       main = paste("CATEs: RMST (", h, "-Day)", sep = ""),
+       xlab = paste("Effect of RHC on", h, "Day RMST"),
+       col = "lightgreen", border = "white")
+}
+```
+
+# Cross-Validation for Survival Probability Models (Does not apply to CSF, but still attempted, clearly not for CSF)
+
+```{r}
+set.seed(2025)
+
+folds <- sample(1:5, size = length(Y), replace = TRUE)
+
+# Horizon values
+horizons <- c(30, 60, 90, 120, 150, 180)
+c_index_sp <- numeric(length(horizons))
+
+for (j in seq_along(horizons)) {
+  h <- horizons[j]
+  c_indices <- numeric(5)
+  
+  for (i in 1:5) {
+    train_idx <- which(folds != i)
+    test_idx  <- which(folds == i)
+
+    # Train model
+    model_cv <- causal_survival_forest(
+      X = X[train_idx, ],
+      Y = Y[train_idx],
+      D = D[train_idx],
+      W = W[train_idx],
+      horizon = h,
+      target = "survival.probability",
+      num.trees = 1000,
+      seed = 2025
+    )
+
+    # Predict survival probability and convert to risk scores
+    preds <- predict(model_cv, newdata = X[test_idx, ], failure.time = h)
+    risk_scores <- 1 - preds$predictions
+    surv_obj <- Surv(Y[test_idx], D[test_idx])
+
+    # Calculate C-index
+    concordance_result <- concordance(surv_obj ~ risk_scores)
+    c_indices[i] <- concordance_result$concordance
+  }
+
+  c_index_sp[j] <- mean(c_indices)
+}
+
+# View results
+c_index_sp_table <- tibble(
+  Horizon = horizons,
+  Target = "Survival Probability",
+  Mean_C_Index = round(c_index_sp, 4)
+)
+
+print(c_index_sp_table)
+write.csv(c_index_sp_table, "c_index_sp_table.csv", row.names = FALSE)
+```
+
+# Cross-Validation for RMST Models (C-Index, Not Typically Used for CSF - Just for DeepSurv)
+
+```{r}
+set.seed(2025)
+folds <- sample(1:5, size = length(Y), replace = TRUE)
+
+c_index_rmst <- numeric(length(horizons))
+
+for (j in seq_along(horizons)) {
+  h <- horizons[j]
+  c_indices <- numeric(5)
+  
+  for (i in 1:5) {
+    train_idx <- which(folds != i)
+    test_idx  <- which(folds == i)
+
+    # Train model
+    model_cv <- causal_survival_forest(
+      X = X[train_idx, ],
+      Y = Y[train_idx],
+      D = D[train_idx],
+      W = W[train_idx],
+      horizon = h,
+      target = "RMST",
+      num.trees = 1000,
+      seed = 2025
+    )
+
+    # Predict RMST and convert to risk scores (negative = worse outcome)
+    preds <- predict(model_cv, newdata = X[test_idx, ], failure.time = h)
+    risk_scores <- -preds$predictions  # Higher RMST = better, so reverse sign
+    surv_obj <- Surv(Y[test_idx], D[test_idx])
+
+    # Calculate C-index
+    concordance_result <- concordance(surv_obj ~ risk_scores)
+    c_indices[i] <- concordance_result$concordance
+  }
+
+  c_index_rmst[j] <- mean(c_indices)
+}
+
+# View results
+c_index_rmst_table <- tibble(
+  Horizon = horizons,
+  Target = "RMST",
+  Mean_C_Index = round(c_index_rmst, 4)
+)
+
+print(c_index_rmst_table)
+write.csv(c_index_rmst_table, "c_index_rmst_table.csv", row.names = FALSE)
+```
+
+# Feature Importance Chart (Unique to CSF Model Compared to DeepSurv) and Correlation (R squared) Between These Top Variables and CATE, Focusing on RMST Model for 180-Day Survival
+
+```{r}
+# Compute variable importance from CSF model
+vi <- variable_importance(csf_180_rmst)
+
+# Create data frame of variable names and importance values
+top_vars <- data.frame(
+  Variable = colnames(X),
+  Importance = vi
+)
+
+# Rename key variables using your full dictionary
+name_map <- c(
+  surv2md1 = "Support model 2-month survival estimate",
+  age = "Age",
+  aps1 = "APACHE score",
+  crea1 = "Creatinine",
+  pot1 = "Potassium",
+  meanbp1 = "Mean blood pressure",
+  pafi1 = "PaO2/FiO2 ratio",
+  hema1 = "Hematocrit",
+  wblc1 = "White blood cell count",
+  scoma1 = "Glasgow Coma Score",
+  ph1 = "pH",
+  resp1 = "Respiratory rate",
+  paco21 = "PaCO2",
+  wtkilo1 = "Weight",
+  sod1 = "Sodium"
+)
+
+# Apply mapping to variable column
+top_vars$Variable <- ifelse(top_vars$Variable %in% names(name_map),
+                            name_map[top_vars$Variable],
+                            top_vars$Variable)
+
+# Sort by decreasing importance
+top_vars <- top_vars[order(-top_vars$Importance), ]
+
+# Get top 10 most important variables
+top_10_vars <- top_vars$Variable[1:10]
+
+# Map back to original column names (reverse map for lookup)
+reverse_name_map <- setNames(names(name_map), name_map)
+top_10_raw_names <- ifelse(top_10_vars %in% names(reverse_name_map),
+                           reverse_name_map[top_10_vars],
+                           top_10_vars)
+
+# Pull 180-day CATEs
+cate_180 <- cate_estimates_rmst[["180"]]
+
+# Initialize results frame
+feature_importance_chart <- data.frame(
+  Variable = top_10_vars,
+  Importance = top_vars$Importance[1:10],
+  R_squared = NA_real_
+)
+
+# Loop through and fit regression for each variable
+for (i in seq_along(top_10_raw_names)) {
+  varname <- top_10_raw_names[i]
+  x_var <- X[, varname]
+  
+  # Fit linear regression: CATE ~ Variable
+  model <- lm(cate_180 ~ x_var)
+  
+  # Store R²
+  feature_importance_chart$R_squared[i] <- summary(model)$r.squared
+}
+
+# View feature importance chart
+print(feature_importance_chart)
+write.csv(feature_importance_chart, "feature_importance_chart.csv", row.names = FALSE)
+```
+
+# Formatted Table of Variables Contributing Most to CATEs
+
+```{r}
+feature_importance_chart %>%
+  kbl(caption = "Top 10 Variables: Importance and Correlation with CATE (180-day RMST)",
+      digits = 3, align = 'lcc') %>%
+  kable_classic(full_width = F, html_font = "Cambria") %>%
+  column_spec(2:3, width = "3cm") %>%
+  row_spec(0, bold = TRUE, background = "#f7f7f7") %>%
+  add_header_above(c(" " = 1, "Variable Analysis" = 2))
+```
+
+# TOC Plot for CSF Model Evaluation (Per CSF Function Documentation Description)
+
+```{r}
+tau.hat = predict(csf_180_rmst)$predictions
+rate = rank_average_treatment_effect(csf_180_rmst, tau.hat)
+plot(rate,
+main = "TOC: By decreasing CATE estimates"
+)
+```
+
+# SGATE Plot for CSF Model Evaluation (Per CSF Function Documentation Description)
+
+```{r}
+# Get predicted treatment effects
+tau_hat <- predict(csf_180_rmst)$predictions
+
+# Split into quantile groups (e.g., quintiles)
+groups <- cut(tau_hat, breaks = quantile(tau_hat, probs = seq(0, 1, length.out = 6)),
+              include.lowest = TRUE, labels = FALSE)
+
+# Estimate ATE within each group
+library(dplyr)
+sgate_df <- data.frame(tau_hat = tau_hat, group = groups)
+
+sgate_df |> 
+  group_by(group) |> 
+  summarise(mean_tau = mean(tau_hat)) |> 
+  ggplot(aes(x = factor(group), y = mean_tau)) +
+  geom_col(fill = "steelblue") +
+  labs(title = "S-GATE (Quintiles)", x = "Quantile Group", y = "Average Treatment Effect") +
+  theme_minimal()
+```
+
+# HTE Analysis of CSF Model - Pulling the CSF Predicted Harmed and Benefitted Patients
+
+```{r}
+# Add 180-day RMST CATEs to data
+data_clean$CATE_180 <- cate_estimates_rmst[["180"]]
+
+# Create treatment effect groups
+data_clean$Effect_Group <- cut(data_clean$CATE_180,
+                                breaks = c(-Inf, 0, Inf),
+                                labels = c("Harmed", "Benefitted"))
+
+effect_group_table <- table(data_clean$Effect_Group)
+effect_group_df <- as.data.frame(effect_group_table)
+colnames(effect_group_df) <- c("Effect_Group", "Count")
+effect_group_df
+
+write.csv(effect_group_df, "effect_group_table.csv", row.names = FALSE)
+```
+
+# Looking at the Means for the Key Numeric Variables of Interest in the Groups 
+
+```{r}
+# Choose key variables of interest
+summary_vars <- c("age", "sex", "aps1", "meanbp1", "pafi1")
+
+# Summarize means/percentages by Effect Group
+effect_group_summary <- data_clean %>%
+  group_by(Effect_Group) %>%
+  summarise(across(all_of(summary_vars), ~ round(mean(as.numeric(.), na.rm = TRUE), 2)))
+effect_group_summary
+
+write.csv(effect_group_summary, "effect_group_summary.csv", row.names = FALSE)
+```
+
+# Deeper Look Into RHC HTE by Primary Disease Category
+
+```{r}
+table(data_clean$race, data_clean$Effect_Group)
+prop.table(table(data_clean$race, data_clean$Effect_Group), margin = 2)  # column %
+
+ggplot(data_clean, aes(x = cat1, fill = Effect_Group)) +
+  geom_bar(position = "fill") +
+  ylab("Proportion") +
+  ggtitle("cat1 Distribution by Treatment Effect Group")
+
+table(data_clean$income, data_clean$Effect_Group)
+prop.table(table(data_clean$income, data_clean$Effect_Group), margin = 2)
+
+table(data_clean$cat1, data_clean$Effect_Group)
+prop.table(table(data_clean$cat1, data_clean$Effect_Group), margin = 2)
+```
+
+# Different Visualization (Boxplot) of RHC HTE by Primary Disease Category
+
+```{r}
+ggplot(data_clean, aes(x = cat1, y = CATE_180)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Treatment Effect (RMST, 180-day) by cat1",
+       y = "CATE (RHC Effect on RMST)", x = "cat1")
+```
+
+# Flipping Stacked Boxplot of RHC HTE by Primary Disease Category
+
+```{r}
+ggplot(data_clean, aes(x = cat1, y = CATE_180, fill = Effect_Group)) +
+  geom_boxplot(outlier.size = 0.5) +
+  coord_flip() +
+  labs(title = "CATE Distribution by Diagnosis (180-day RMST)", y = "CATE (days)", x = "Diagnosis")
+```
+
+# Deeper Look Into RHC HTE by Mean Blood Pressure
+
+```{r}
+ggplot(data_clean, aes(x = meanbp1, y = CATE_180)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "loess") +
+  labs(title = "CATE vs meanbp1", y = "CATE (180-day RMST)", x = "meanbp1")
+```
+
+# Futher Evaluation of RHC HTE by Mean Blood Pressure (Splitting to Low, Normal, High, Very High)
+
+```{r}
+data_clean$bp_group <- cut(data_clean$meanbp1,
+                           breaks = c(-Inf, 60, 90, 120, Inf),
+                           labels = c("Low", "Normal", "High", "Very High"))
+
+ggplot(data_clean, aes(x = bp_group, y = CATE_180)) +
+  geom_boxplot() +
+  labs(title = "CATE by Blood Pressure Group", y = "CATE (180-day RMST)", x = "BP Group")
+
+low_bp <- data_clean %>% filter(meanbp1 >= 45, meanbp1 <= 65)
+high_bp <- data_clean %>% filter(meanbp1 >= 95, meanbp1 <= 105)
+
+summary(low_bp[, summary_vars])
+summary(high_bp[, summary_vars])
+```
+
+# Extracting Patient IDs with Positive CATEs for Cross-Comparison With DeepSurv (RMST, 180-Day)
+
+```{r}
+df_180 <- data_clean %>%
+  filter(CATE_180 > 0) %>%
+  select(ptid) %>%
+  mutate(days = "180")
+
+write.csv(df_180, "positive_CATE_ptids_CSF.csv", row.names = FALSE)
+```
+
+# Testing New Method to Evaluate CSF Model (Brier Score, More Accurate to True CSF Prediciton Accuracy than C-Index)
+
+```{r}
+# Define horizon
+h <- 30
+
+# Find predicted survival probability at t=30 under observed treatment
+pred <- predict(csf_30_sb, newdata = X, treatment = W)
+S_hat <- pred$predictions
+
+# Look at the true outcome (did they survive past 30 days?)
+I_surv <- as.numeric(Y > h)
+
+# Estimate censoring distribution G(t) -- flip D (1=event to 0=censored) to censor the model
+G_model <- survfit(Surv(Y, 1 - D) ~ 1)
+G_hat <- summary(G_model, times = h)$surv
+
+# Calculate IPCW for uncensored cases, avoid dividing by 0 by clipping very small G_hat values
+epsilon <- 1e-5
+G_hat <- max(G_hat, epsilon)
+w_ipcw <- 1 / G_hat
+
+# Compute Brier Score
+brier <- mean(w_ipcw * (I_surv - S_hat)^2)
+
+# Output
+cat("Manual Brier Score at", h, "days:", round(brier, 4), "\n")
+```
+
+# Train a CART Tree (Decision Tree for Clinicians) With Estimated CSF CATEs
+
+```{r}
+# Convert X to a data frame
+X_df <- as.data.frame(X)
+cate_rmst <- predict(csf_180_rmst)$predictions
+X_df$cate_rmst <- as.vector(cate_rmst)
+
+# Fit CART using CATEs as outcome
+cart_model <- rpart(cate_rmst ~ ., data = X_df)
+rpart.plot(cart_model)
+```
