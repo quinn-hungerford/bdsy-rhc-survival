@@ -1,0 +1,171 @@
+---
+title: "DeepSurv CART Tree"
+author: "Abhroneel Ghosh"
+date: "2025-07-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Original R code developed by Abhroneel Ghosh.
+R Markdown conversion, code cleanup, figure generation, and model comparison by Quinn Hungerford.
+
+## Loading Libraries
+
+```{r}
+# Importing libraries
+# For data manipulations
+library(tidyverse)
+library(Hmisc)
+library(reshape2)
+library(mice)
+library(caret)
+
+# For SUPPORT data
+
+library(readr)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(tableone)
+library(knitr)
+library(kableExtra)
+
+# For stats/logit
+library(MASS)
+library(tidymodels)
+library(pracma)
+library(rpart)
+library(rpart.plot)
+
+# For survival analysis
+library(survival)
+library(survivalmodels)
+library(cmprsk)
+library(riskRegression)
+library(survminer)
+
+# For data viz
+library(ggplot2)
+library(ggfortify)
+library(gridExtra)
+library(GGally)
+
+# For DeepSurv
+library(dnn)
+#library(deepsurv)
+```
+
+
+## Load Data
+
+```{r}
+rhc_imputed <- read_csv("rhc_imputed.csv")
+
+dict <- read_excel("Dictionary.xlsx")
+
+results_30 <- read.csv("results_30_day.csv")
+results_90 <- read.csv("results_90_day.csv")
+results_180 <- read.csv("results_180_day.csv")
+```
+
+
+## Data Cleaning - Changing String Categories to Factors
+
+```{r}
+data <- rhc_imputed
+
+data$ca <- as.factor(data$ca)
+data$death<- as.factor(data$death)
+data$dth30<- as.factor(data$dth30)
+data$swang1<- as.factor(data$swang1)
+data$dnr1<- as.factor(data$dnr1)
+data$resp<- as.factor(data$resp)
+data$card<- as.factor(data$card)
+data$neuro<- as.factor(data$neuro)
+data$gastr<- as.factor(data$gastr)
+data$rel<- as.factor(data$rel)
+data$meta<- as.factor(data$meta)
+data$hema<- as.factor(data$hema)
+data$seps<- as.factor(data$seps)
+data$trauma<- as.factor(data$trauma)
+data$ortho<- as.factor(data$ortho)
+data$sex<- as.factor(data$sex)
+
+data$race <- as.factor(data$race)
+data$income <- as.factor(data$income)
+data$ninsclas <- as.factor(data$ninsclas)
+data$cat1 <- as.factor(data$cat1)
+data$cat2 <- as.factor(data$cat2)
+
+rhc_imputed <- data
+```
+
+
+## Data Cleaning - Creating Survival Outcomes
+
+```{r}
+outcome_vars <- c("sadmdte", "dschdte", "dthdte", "lstctdte", "dth30", "t3d30", "death", "survtime", "censor", "SurvivalTime")
+
+survtime <- ifelse(is.na(rhc_imputed$dthdte), 
+                   pmax(rhc_imputed$lstctdte, rhc_imputed$dschdte) - rhc_imputed$sadmdte,
+                   rhc_imputed$dthdte - rhc_imputed$sadmdte)
+
+survevent <- as.integer(!(is.na(rhc_imputed$dthdte)))
+
+survtime30 <- pmin(30, survtime)
+survevent30 <- ifelse(survtime <= 30, survevent, 0)
+
+survtime90 <- pmin(90, survtime)
+survevent90 <- ifelse(survtime <= 90, survevent, 0)
+
+survtime180 <- pmin(180, survtime)
+survevent180 <- ifelse(survtime <= 180, survevent, 0)
+
+#survtime180 <- rhc_imputed$SurvivalTime
+#survevent180 <- rhc_imputed$death
+```
+
+
+## Fitting CART
+
+```{r}
+data <- rhc_imputed[setdiff(colnames(rhc_imputed), c(outcome_vars, "ptid"))]
+
+data$rmst <- results_180$rmst
+
+data = data[setdiff(colnames(data),c("ninsclas", "income", "edu"))]
+
+dim(data)
+colnames(data)
+
+cat("Rows in data:", nrow(data), "\n")
+cat("Cols in data (including time/event+features):", ncol(data), "\n")
+```
+
+
+## Fitting RPart Model
+
+```{r}
+cart_model <- rpart(rmst~., data = data, method = "anova", maxdepth = 3)
+
+summary(cart_model)
+
+png("DeepSurv_decision_tree.png", 
+    width = 3000, height = 2000, res = 300)
+
+rpart.plot(cart_model, type = 1,
+           cex = 0.75,
+           branch.lwd = 2,
+           border.col = 'black',
+           shadow.col = '#b3cde0',
+           compress = TRUE,
+           faclen = 0,
+           )
+
+dev.off()
+```
+
+
