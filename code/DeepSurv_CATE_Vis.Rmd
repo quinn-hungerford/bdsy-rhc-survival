@@ -1,0 +1,1731 @@
+---
+title: "DeepSurv CATE Visualization"
+author: "Abhroneel Ghosh"
+date: "2025-07-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Original R code developed by Abhroneel Ghosh.
+R Markdown conversion, code cleanup, figure generation, and model comparison by Quinn Hungerford.
+
+## Loading Libraries
+
+```{r}
+# Importing libraries
+# For data manipulations
+library(tidyverse)
+library(Hmisc)
+library(reshape2)
+library(mice)
+library(caret)
+
+# For SUPPORT data
+
+library(readr)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(tableone)
+library(knitr)
+library(kableExtra)
+
+# For stats/logit
+library(MASS)
+library(tidymodels)
+library(pracma)
+
+# For survival analysis
+library(survival)
+library(survivalmodels)
+library(cmprsk)
+library(riskRegression)
+library(survminer)
+
+# For data viz
+library(ggplot2)
+library(ggfortify)
+library(gridExtra)
+library(GGally)
+
+# For DeepSurv
+library(dnn)
+#library(deepsurv)
+```
+
+
+## Load Data
+
+```{r}
+rhc_imputed <- read_csv("rhc_imputed.csv")
+
+dict <- read_excel("Dictionary.xlsx")
+
+results_30 <- read.csv("results_30_day.csv")
+results_90 <- read.csv("results_90_day.csv")
+results_180 <- read.csv("results_180_day.csv")
+
+results_180_rsf <- read.csv("results_180_day_rsf.csv")
+```
+
+
+## Comparing CATEs Across Outcomes
+
+```{r}
+
+head(results_30)
+
+# Correlation Plot
+
+cat <- c(rep("30 day", dim(results_30)[1]),
+         rep("90 day", dim(results_90)[1]),
+         rep("180 day", dim(results_180)[1]))
+
+df_plot <- rbind(results_30[, 3:6],
+                 results_90[, 3:6],
+                 results_180[, 3:6])
+
+df_plot$cat <- cat
+df_plot$cat <- as.factor(df_plot$cat)
+
+plot <- ggpairs(df_plot, columns = 1:4, ggplot2::aes(color = cat))
+
+plot
+ggsave("CATES_by_outcome.png",
+       plot, width = 12, height = 12)
+
+plot <- df_plot[, c(1,4,5)] %>%
+  ggplot(aes(x = risk_ratio, y = rmst, color = cat)) +
+  geom_point(alpha = 0.4)
+
+plot
+
+# Percentage agreement
+
+df_temp <- df_plot
+df_temp$risk_ratio <- (df_temp$risk_ratio > 1)
+df_temp$survival_quant <- (df_temp$survival_quant < 0)
+df_temp$survival_prob <- (df_temp$survival_prob < 0)
+df_temp$rmst <- (df_temp$rmst < 0)
+
+n <- ncol(df_temp)
+match_table <- matrix(0, nrow = n, ncol = n)
+
+# Compute percentage matches
+for (i in 1:n) {
+  for (j in 1:n) {
+    match_table[i, j] <- mean(df_temp[, i] == df_temp[, j], na.rm = TRUE) * 100
+  }
+}
+
+match_table
+```
+
+
+## Comparing CATEs Across Duration
+
+```{r}
+# Rescaling CATEs
+
+cols_to_standardize <- c("risk_ratio", "survival_quant", "survival_prob", "rmst")
+results_30 <- results_30 %>%
+  mutate(across(all_of(cols_to_standardize), scale))
+results_90 <- results_90 %>%
+  mutate(across(all_of(cols_to_standardize), scale))
+results_180 <- results_180 %>%
+  mutate(across(all_of(cols_to_standardize), scale))
+
+# Correlation plots
+
+days_30 <- as.vector(melt(results_30[, 3:6])$value)
+days_90 <- as.vector(melt(results_90[, 3:6])$value)
+days_180 <- as.vector(melt(results_180[, 3:6])$value)
+outcome <- as.vector(melt(results_30[, 3:6])$variable)
+
+df_plot <- data.frame(days_30, days_90, days_180, outcome)
+
+head(df_plot)
+#df_plot <- df_plot[, c(1,2,4,6)]
+
+ggpairs(df_plot[(df_plot$outcome == "risk_ratio"), ], columns = 1:3)
+ggpairs(df_plot[(df_plot$outcome == "survival_prob"), ], columns = 1:3)
+ggpairs(df_plot[(df_plot$outcome == "survival_quant"), ], columns = 1:3)
+ggpairs(df_plot[(df_plot$outcome == "rmst"), ], columns = 1:3)
+
+plot <- ggpairs(df_plot, columns = 1:3, ggplot2::aes(color = outcome))
+
+plot
+
+ggsave("CATES_by_days.png",
+       plot, width = 12, height = 12)
+
+
+# Percentage agreement
+
+cor(df_plot[(df_plot$outcome == "risk_ratio"), 1:3])
+cor(df_plot[(df_plot$outcome == "survival_prob"), 1:3])
+cor(df_plot[(df_plot$outcome == "survival_quant"), 1:3])
+cor(df_plot[(df_plot$outcome == "rmst"), 1:3])
+
+df_temp <- df_plot
+df_temp[(df_temp$outcome == "risk_ratio"), 1:3] <- df_temp[(df_temp$outcome == "risk_ratio"), 1:3] < 1
+df_temp[(df_temp$outcome == "survival_prob"), 1:3] <- df_temp[(df_temp$outcome == "survival_prob"), 1:3] > 0
+df_temp[(df_temp$outcome == "survival_quant"), 1:3] <- df_temp[(df_temp$outcome == "survival_quant"), 1:3] > 0
+df_temp[(df_temp$outcome == "rmst"), 1:3] <- df_temp[(df_temp$outcome == "rmst"), 1:3] > 0
+
+df_temp <- df_temp[(df_temp$outcome == "risk_ratio"), 1:3]
+df_temp <- df_temp[(df_temp$outcome == "survival_prob"), 1:3]
+df_temp <- df_temp[(df_temp$outcome == "survival_quant"), 1:3]
+df_temp <- df_temp[(df_temp$outcome == "rmst"), 1:3]
+
+head(df_temp)
+n <- ncol(df_temp)
+match_table <- matrix(0, nrow = n, ncol = n)
+
+# Compute percentage matches
+for (i in 1:n) {
+  for (j in 1:n) {
+    match_table[i, j] <- mean(df_temp[, i] == df_temp[, j], na.rm = TRUE) * 100
+  }
+}
+
+match_table
+```
+
+
+## Continuous Covariates: Age
+
+
+```{r}
+cutoff <- 0
+rhc_recco <- as.numeric(results_180$rmst > cutoff)
+
+table(results_30$rmst > 0)
+
+df_plot <- data.frame(age = rhc_imputed$age,
+                      rhc_recco)
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                               levels = c(0,1),
+                               labels = c("RHC not recommended", "RHC recommended"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = age, fill = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), color = "#e9ecef", binwidth = 2.5, alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Age by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_age.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Continuous Covariates: Education
+
+```{r}
+df_plot <- data.frame(edu = rhc_imputed$edu,
+                      rhc_recco)
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = edu, fill = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Years of Education by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_edu.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Continuous Covariates: Scoma1 (Coma)
+
+```{r}
+df_1 <- data.frame(coma_score = rhc_imputed$scoma1,
+                   rhc_recco)
+
+df_2 <- data.frame(coma_score = rhc_imputed$scoma1,
+                   rhc_recco = rep(2, dim(df_1)[1]))
+
+df_plot <- bind_rows(df_1, df_2)
+
+df_plot$rmst <- rep(results_180$rmst, 2)
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1,2),
+                            labels = c("RHC not recommended", "RHC recommended", "Total Population"))
+
+plot <- df_plot[1:nrow(df_1), ] %>%
+  ggplot(aes(x = coma_score, fill = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), color = "#e9ecef", alpha = 0.5, position = "identity", bins = 50) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  geom_density(data = df_plot[(nrow(df_1)+1):nrow(df_plot), ],
+               aes(x = coma_score), alpha = 0) + 
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Glasgow Coma Score by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_coma_score.png",
+       plot, width = 8, height = 6)
+
+
+plot <- df_plot %>%
+  ggplot(aes(x = rhc_recco, y = apache_score, fill = rhc_recco)) +
+  geom_violin() +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  ggtitle("Distribution of APACHE Score by recommendation") +
+  theme_light()
+
+plot
+
+df_plot <- df_plot[1:nrow(df_1), ] %>%
+  mutate(coma_quintiles = factor(ntile(coma_score, 5), 
+                                   labels = c("Q1", "Q2", "Q3", "Q4", "Q5")))
+
+label_data <- df_plot %>%
+  group_by(coma_quintiles) %>%
+  summarise(percent_treated = mean(rhc_recco == "RHC recommended") * 100) %>%
+  mutate(label = paste0(round(percent_treated, 1), "% RHC"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = coma_quintiles, y = rmst, fill = rhc_recco)) +
+  geom_violin(position = "identity", alpha = 0.6) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of CATE - RMST by Glasgow Coma Score") +
+  theme_light() +
+  geom_text(data = label_data, aes(x = coma_quintiles, y = Inf, label = label),
+            vjust = 1.5, inherit.aes = FALSE, size = 3.5)
+
+plot
+
+ggsave("CATE_by_coma_score.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Continuous Covariates: Paco21
+
+```{r}
+df_plot <- data.frame(PaCO2 = rhc_imputed$paco21,
+                      rhc_recco)
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = PaCO2, fill = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of PaCO2 by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_PaCO2.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Continuous Covariates: pH
+
+```{r}
+df_plot <- data.frame(pH = rhc_imputed$ph1,
+                      rhc_recco)
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = pH, fill = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of pH by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_pH.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Continuous Covariates: DASI
+
+```{r}
+df_plot <- data.frame(DASI = rhc_imputed$das2d3pc,
+                      rhc_recco)
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = DASI, fill = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of DASI by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_dasi.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Continuous Covariates: APACHE Score
+
+```{r}
+df_1 <- data.frame(apache_score = rhc_imputed$aps1,
+                      rhc_recco)
+
+df_2 <- data.frame(apache_score = rhc_imputed$aps1,
+                   rhc_recco = rep(2, dim(df_1)[1]))
+
+df_plot <- bind_rows(df_1, df_2)
+
+df_plot$rmst <- rep(results_180$rmst, 2)
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1,2),
+                            labels = c("RHC not recommended", "RHC recommended", "Total Population"))
+
+plot <- df_plot[1:nrow(df_1), ] %>%
+  ggplot(aes(x = apache_score, fill = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), color = "#e9ecef", alpha = 0.5, position = "identity", bins = 50) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  geom_density(data = df_plot[(nrow(df_1)+1):nrow(df_plot), ],
+             aes(x = apache_score), alpha = 0) + 
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of APACHE Score by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_apache_score.png",
+       plot, width = 5, height = 5)
+
+
+plot <- df_plot %>%
+  ggplot(aes(x = rhc_recco, y = apache_score, fill = rhc_recco)) +
+  geom_violin() +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  #labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of APACHE Score by recommendation") +
+  theme_light()
+
+plot
+
+plot <- df_plot[1:nrow(df_1), ] %>%
+  mutate(apache_quintiles = factor(ntile(apache_score, 5), 
+                                labels = c("Q1", "Q2", "Q3", "Q4", "Q5"))) %>%
+  ggplot(aes(x = apache_quintiles, y = rmst, fill = rhc_recco)) +
+  geom_violin(position = "identity", alpha = 0.6) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of CATE - RMST by Apache") +
+  theme_light()
+
+plot
+```
+
+
+## Support Estimate
+
+```{r}
+df_1 <- data.frame(support_survprob = rhc_imputed$surv2md1,
+                   rhc_recco)
+
+df_2 <- data.frame(support_survprob = rhc_imputed$surv2md1,
+                   rhc_recco = rep(2, dim(df_1)[1]))
+
+df_plot <- bind_rows(df_1, df_2)
+
+df_plot$rmst <- rep(results_180$rmst, 2)
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1,2),
+                            labels = c("RHC not recommended", "RHC recommended", "Total Population"))
+
+plot <- df_plot[1:nrow(df_1), ] %>%
+  ggplot(aes(x = support_survprob, fill = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), color = "#e9ecef", alpha = 0.5, position = "identity", bins = 50) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  geom_density(data = df_plot[(nrow(df_1)+1):nrow(df_plot), ],
+               aes(x = support_survprob), alpha = 0) + 
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Support Survival Probability by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_survprob.png",
+       plot, width = 8, height = 6)
+
+
+plot <- df_plot %>%
+  ggplot(aes(x = rhc_recco, y = apache_score, fill = rhc_recco)) +
+  geom_violin() +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  ggtitle("Distribution of APACHE Score by recommendation") +
+  theme_light()
+
+plot
+
+df_plot <- df_plot[1:nrow(df_1), ] %>%
+  mutate(survprob_quintiles = factor(ntile(support_survprob, 5), 
+                                 labels = c("Q1", "Q2", "Q3", "Q4", "Q5")))
+
+label_data <- df_plot %>%
+  group_by(survprob_quintiles) %>%
+  summarise(percent_treated = mean(rhc_recco == "RHC recommended") * 100) %>%
+  mutate(label = paste0(round(percent_treated, 1), "% RHC"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = survprob_quintiles, y = rmst, fill = rhc_recco)) +
+  geom_violin(position = "identity", alpha = 0.6) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of CATE - RMST by Glasgow Coma Score") +
+  theme_light() +
+  geom_text(data = label_data, aes(x = survprob_quintiles, y = Inf, label = label),
+            vjust = 1.5, inherit.aes = FALSE, size = 3.5)
+
+plot
+
+ggsave("CATE_by_coma_survprob.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Continuous Variables: Respiratory Rate
+
+```{r}
+df_1 <- data.frame(resp_rate = rhc_imputed$resp1,
+                   rhc_recco)
+
+df_2 <- data.frame(resp_rate = rhc_imputed$resp1,
+                   rhc_recco = rep(2, dim(df_1)[1]))
+
+df_plot <- bind_rows(df_1, df_2)
+
+df_plot$rmst <- rep(results_180$rmst, 2)
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1,2),
+                            labels = c("RHC not recommended", "RHC recommended", "Total Population"))
+
+plot <- df_plot[1:nrow(df_1), ] %>%
+  ggplot(aes(x = resp_rate, fill = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), color = "#e9ecef", alpha = 0.5, position = "identity", bins = 50) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  geom_density(data = df_plot[(nrow(df_1)+1):nrow(df_plot), ],
+               aes(x = resp_rate), alpha = 0) + 
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Respiratory Rate by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_resp_rate.png",
+       plot, width = 8, height = 6)
+
+
+df_plot <- df_plot[1:nrow(df_1), ] %>%
+  mutate(rr_quintiles = factor(ntile(resp_rate, 5), 
+                                 labels = c("Q1", "Q2", "Q3", "Q4", "Q5")))
+
+label_data <- df_plot %>%
+  group_by(rr_quintiles) %>%
+  summarise(percent_treated = mean(rhc_recco == "RHC recommended") * 100) %>%
+  mutate(label = paste0(round(percent_treated, 1), "% RHC"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rr_quintiles, y = rmst, fill = rhc_recco)) +
+  geom_violin(position = "identity", alpha = 0.6) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of CATE - RMST by Respiratory Rate") +
+  theme_light() +
+  geom_text(data = label_data, aes(x = rr_quintiles, y = Inf, label = label),
+            vjust = 1.5, inherit.aes = FALSE, size = 3.5)
+
+plot
+
+ggsave("CATE_by_resp_rate.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Continuous Variables: Blood Pressure
+
+```{r}
+df_1 <- data.frame(meanbp = rhc_imputed$meanbp1,
+                   rhc_recco)
+
+df_2 <- data.frame(meanbp = rhc_imputed$meanbp1,
+                   rhc_recco = rep(2, dim(df_1)[1]))
+
+df_plot <- bind_rows(df_1, df_2)
+
+df_plot$rmst <- rep(results_180$rmst, 2)
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1,2),
+                            labels = c("RHC not recommended", "RHC recommended", "Total Population"))
+
+plot <- df_plot[1:nrow(df_1), ] %>%
+  ggplot(aes(x = meanbp, fill = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), color = "#e9ecef", alpha = 0.5, position = "identity", bins = 50) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  geom_density(data = df_plot[(nrow(df_1)+1):nrow(df_plot), ],
+               aes(x = meanbp), alpha = 0) + 
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Blood Pressure by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_meanbp.png",
+       plot, width = 8, height = 6)
+
+
+df_plot <- df_plot[1:nrow(df_1), ] %>%
+  mutate(bp_quintiles = factor(ntile(meanbp, 5), 
+                               labels = c("Q1", "Q2", "Q3", "Q4", "Q5")))
+
+label_data <- df_plot %>%
+  group_by(bp_quintiles) %>%
+  summarise(percent_treated = mean(rhc_recco == "RHC recommended") * 100) %>%
+  mutate(label = paste0(round(percent_treated, 1), "% RHC"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = bp_quintiles, y = rmst, fill = rhc_recco)) +
+  geom_violin(position = "identity", alpha = 0.6) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of CATE - RMST by Respiratory Rate") +
+  theme_light() +
+  geom_text(data = label_data, aes(x = bp_quintiles, y = Inf, label = label),
+            vjust = 1.5, inherit.aes = FALSE, size = 3.5)
+
+plot
+
+ggsave("CATE_by_meanbp.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Binary Variables: Sex
+
+```{r}
+df_plot <- data.frame(sex = rhc_imputed$sex,
+                      rhc_recco)
+
+df_plot$sex <- factor(df_plot$sex,
+                      levels = c(0,1),
+                      labels = c("Female", "Male"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, sex) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = sex, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Sex by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_sex.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(sex = rhc_imputed$sex,
+                      rmst = results_180$rmst)
+
+df_plot$sex <- factor(df_plot$sex,
+                      levels = c(0,1),
+                      labels = c("Female", "Male"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = sex)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of CATE - RMST by sex") +
+  theme_light()
+
+plot
+  
+ggsave("CATE_by_sex.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Binary Variables: Congestive Heart Failure History
+
+```{r}
+df_plot <- data.frame(chf_history = rhc_imputed$chfhx,
+                      rhc_recco)
+
+df_plot$chf_history <- factor(df_plot$chf_history,
+                      levels = c(0,1),
+                      labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, chf_history) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = chf_history, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Congestive HF History by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_chfhx.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(chf_history = rhc_imputed$chfhx,
+                      rmst = results_180$rmst)
+
+df_plot$chf_history <- factor(df_plot$chf_history,
+                              levels = c(0,1),
+                              labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = chf_history)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of CATE - RMST by Congestive HF history") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_chfhx.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Binary Variables: Chronic Renal Disease History
+
+```{r}
+df_plot <- data.frame(renal_history = rhc_imputed$relhx,
+                      rhc_recco)
+
+df_plot$renal_history <- factor(df_plot$renal_history,
+                              levels = c(0,1),
+                              labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, renal_history) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = renal_history, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Chronic Renal disease history by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_renalhx.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(renal_history = rhc_imputed$relhx,
+                      rmst = results_180$rmst)
+
+df_plot$renal_history <- factor(df_plot$renal_history,
+                              levels = c(0,1),
+                              labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = renal_history)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of CATE - RMST by Chronic Renal disease history") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_renalhx.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Binary Variables: Malignancy History
+
+```{r}
+df_plot <- data.frame(malignancy_history = rhc_imputed$malighx,
+                      rhc_recco)
+
+df_plot$malignancy_history <- factor(df_plot$malignancy_history,
+                                levels = c(0,1),
+                                labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, malignancy_history) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = malignancy_history, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Malignancy history by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_malignancyhx.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(malignancy_history = rhc_imputed$malighx,
+                      rmst = results_180$rmst)
+
+df_plot$malignancy_history <- factor(df_plot$malignancy_history,
+                                levels = c(0,1),
+                                labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = malignancy_history)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of CATE - RMST by Malignancy history") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_malignancyhx.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Binary Variables: Cardiovascular Comorbidities
+
+```{r}
+df_plot <- data.frame(cardio_comorbidities = rhc_imputed$cardiohx,
+                      rhc_recco)
+
+df_plot$cardio_comorbidities <- factor(df_plot$cardio_comorbidities,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, cardio_comorbidities) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = cardio_comorbidities, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Cardiovascular Comorbidities by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_cardiohx.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(cardio_comorbidities = rhc_imputed$cardiohx,
+                      rmst = results_180$rmst)
+
+df_plot$cardio_comorbidities <- factor(df_plot$cardio_comorbidities,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = cardio_comorbidities)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "Status") +
+  ggtitle("Distribution of CATE - RMST by Cardiovascular comorbidities") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_cardiohx.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Binary Variables: Myocardial Infarction History
+
+```{r}
+df_plot <- data.frame(myocardial_history = rhc_imputed$amihx,
+                      rhc_recco)
+
+df_plot$myocardial_history <- factor(df_plot$myocardial_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, myocardial_history) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = myocardial_history, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Myocardial Infarction history by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_myocardialhx.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(myocardial_history = rhc_imputed$malighx,
+                      rmst = results_180$rmst)
+
+df_plot$myocardial_history <- factor(df_plot$myocardial_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = myocardial_history)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "Status") +
+  ggtitle("Distribution of CATE - RMST by Myocardial Infarction history") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_myocardialhx.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Binary Variables: Liver Disease History
+
+```{r}
+df_plot <- data.frame(liver_history = rhc_imputed$liverhx,
+                      rhc_recco)
+
+df_plot$liver_history <- factor(df_plot$liver_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, liver_history) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = liver_history, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Liver disease history by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_liverhx.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(liver_history = rhc_imputed$liverhx,
+                      rmst = results_180$rmst)
+
+df_plot$liver_history <- factor(df_plot$liver_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = liver_history)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "Status") +
+  ggtitle("Distribution of CATE - RMST by Liver disease history") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_liverhx.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Binary Variables: Immunosuppression History
+
+```{r}
+df_plot <- data.frame(immuno_history = rhc_imputed$immunhx,
+                      rhc_recco)
+
+df_plot$immuno_history <- factor(df_plot$immuno_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, immuno_history) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = immuno_history, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Immunosuppressive history by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_immunhx.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(immuno_history = rhc_imputed$immunhx,
+                      rmst = results_180$rmst)
+
+df_plot$immuno_history <- factor(df_plot$immuno_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = immuno_history)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "Status") +
+  ggtitle("Distribution of CATE - RMST by Immunosuppressive history") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_immunhx.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Binary Variables: Chronic Pulmonary History
+
+```{r}
+df_plot <- data.frame(pulmonary_history = rhc_imputed$chrpulhx,
+                      rhc_recco)
+
+df_plot$pulmonary_history <- factor(df_plot$pulmonary_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, pulmonary_history) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = pulmonary_history, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Chronic Pulmonary history by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_pulmonaryhx.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(pulmonary_history = rhc_imputed$chrpulhx,
+                      rmst = results_180$rmst)
+
+df_plot$pulmonary_history <- factor(df_plot$pulmonary_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = pulmonary_history)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "Status") +
+  ggtitle("Distribution of CATE - RMST by Pulmonary history") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_pulmonaryhx.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Binary Variables: Pschiatric History
+
+```{r}
+df_plot <- data.frame(psych_history = rhc_imputed$psychhx,
+                      rhc_recco)
+
+df_plot$psych_history <- factor(df_plot$psych_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, psych_history) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = psych_history, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Myocardial Infarction history by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_psychhx.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(psych_history = rhc_imputed$psychhx,
+                      rmst = results_180$rmst)
+
+df_plot$psych_history <- factor(df_plot$psych_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = psych_history)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "Status") +
+  ggtitle("Distribution of CATE - RMST by Psychiatric history") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_psychhx.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Binary Variables: Dementia History
+
+```{r}
+df_plot <- data.frame(dementia_history = rhc_imputed$dementhx,
+                      rhc_recco)
+
+df_plot$dementia_history <- factor(df_plot$dementia_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, dementia_history) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = dementia_history, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Dementia history by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_dementhx.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(dementia_history = rhc_imputed$dementhx,
+                      rmst = results_180$rmst)
+
+df_plot$dementia_history <- factor(df_plot$dementia_history,
+                                     levels = c(0,1),
+                                     labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = dementia_history)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96")) +
+  labs(fill = "Status") +
+  ggtitle("Distribution of CATE - RMST by Dementia history") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_dementhx.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Categorical Variables: Cancer
+
+```{r}
+df_plot <- data.frame(cancer = rhc_imputed$ca,
+                      rhc_recco)
+
+# df_plot$malignancy_history <- factor(df_plot$malignancy_history,
+#                                      levels = c(0,1),
+#                                      labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, cancer) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = cancer, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Cancer by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_cancer.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(cancer = rhc_imputed$ca,
+                      rmst = results_180$rmst)
+
+# df_plot$malignancy_history <- factor(df_plot$malignancy_history,
+#                                      levels = c(0,1),
+#                                      labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = cancer)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.6, position = "identity") +
+  geom_vline(xintercept = 0) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of CATE - RMST by Cancer") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_cancer.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Categorical Variables: Cat1
+
+```{r}
+df_plot <- data.frame(category = rhc_imputed$cat1,
+                      rhc_recco)
+
+# df_plot$malignancy_history <- factor(df_plot$malignancy_history,
+#                                      levels = c(0,1),
+#                                      labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, category) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = category, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  #scale_fill_brewer(palette = "Pastel1") +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Primary Disease Category by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_cat1.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Categorical Variables: Cat2
+
+```{r}
+df_plot <- data.frame(category = rhc_imputed$cat2,
+                      rhc_recco)
+
+# df_plot$malignancy_history <- factor(df_plot$malignancy_history,
+#                                      levels = c(0,1),
+#                                      labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, category) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = category, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  #scale_fill_brewer(palette = "Pastel1") +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Secondary Disease Category by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_cat2.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Categorical Variables: Race
+
+```{r}
+df_plot <- data.frame(race = rhc_imputed$race,
+                      rhc_recco)
+
+# df_plot$malignancy_history <- factor(df_plot$malignancy_history,
+#                                      levels = c(0,1),
+#                                      labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, race) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = race, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  #scale_fill_brewer(palette = "Pastel1") +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Primary Disease Category by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_race.png",
+       plot, width = 8, height = 6)
+
+# CATE distributions
+
+df_plot <- data.frame(race = rhc_imputed$race,
+                      rmst = results_180$rmst)
+
+# df_plot$malignancy_history <- factor(df_plot$malignancy_history,
+#                                      levels = c(0,1),
+#                                      labels = c("No", "Yes"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = rmst, fill = race)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, color = "#e9ecef", alpha = 0.6, position = "identity") +
+  geom_vline(xintercept = 0) +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "Race") +
+  ggtitle("Distribution of CATE - RMST by Race") +
+  theme_light()
+
+plot
+
+ggsave("CATE_by_race.png",
+       plot, width = 8, height = 6)
+```
+
+
+## Categorical Variables: Insurance
+
+```{r}
+df_plot <- data.frame(insurance = rhc_imputed$ninsclas,
+                      rhc_recco)
+
+# df_plot$malignancy_history <- factor(df_plot$malignancy_history,
+#                                      levels = c(0,1),
+#                                      labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, insurance) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = insurance, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  #scale_fill_brewer(palette = "Pastel1") +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Insurance by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_insurance.png",
+       plot, width = 8, height = 6)
+
+
+table((rhc_imputed$cat1 == "Coma"), rhc_imputed$ninsclas)
+table((rhc_imputed$cat1 == "Coma"), rhc_imputed$ninsclas)[1,]/table((rhc_imputed$cat1 == "Coma"), rhc_imputed$ninsclas)[2,]
+```
+
+
+## Categorical Variables: Income
+
+```{r}
+df_plot <- data.frame(income = rhc_imputed$income,
+                      rhc_recco)
+
+# df_plot$malignancy_history <- factor(df_plot$malignancy_history,
+#                                      levels = c(0,1),
+#                                      labels = c("No", "Yes"))
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1),
+                            labels = c("RHC not recommended", "RHC recommended"))
+
+df_counts <- df_plot %>%
+  count(rhc_recco, income) %>%
+  group_by(rhc_recco) %>%
+  mutate(scaled_count = n / sum(n))
+
+plot <- df_counts %>%
+  ggplot(aes(x = income, y = scaled_count, fill = rhc_recco)) +
+  geom_col(color = "#999999", alpha = 0.5, position = "identity") +
+  #scale_fill_brewer(palette = "Pastel1") +
+  scale_fill_manual(values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "DeepSurv reccomendations") +
+  ggtitle("Distribution of Income by recommendation") +
+  theme_light()
+
+plot
+
+ggsave("Recco_by_income.png",
+       plot, width = 8, height = 6)
+
+
+table((rhc_imputed$cat1 == "Coma"), rhc_imputed$ninsclas)
+table((rhc_imputed$cat1 == "Coma"), rhc_imputed$ninsclas)[1,]/table((rhc_imputed$cat1 == "Coma"), rhc_imputed$ninsclas)[2,]
+```
+
+
+## Final Plots: RMST Histogram
+
+```{r}
+df_plot <- data.frame(val = results_180$rmst)
+df_plot$Category <- ifelse(df_plot$val > 0, "Benefits from RHC", "Harmful/No Benefit from RHC")
+
+df_percent <- df_plot %>%
+  count(Category) %>%
+  mutate(perc = round(100 * n / sum(n), 1),
+         label = paste0(perc, "%"))
+
+plot <- df_plot %>%
+  ggplot( aes(x = val, fill = Category, color = Category)) +
+  geom_histogram(binwidth = 1, alpha = 0.7, position = "identity") +
+  scale_color_manual(values = c("#005b96", "#ff6289")) +
+  scale_fill_manual(values = c("#b3cde0", "#ffc2cd")) +
+  geom_vline(xintercept = 0) +
+  scale_x_continuous(name = "Time (days)", breaks = seq(-50,20,5)) +
+  ggtitle("CATE - Difference in RMST (180 days)") +
+  theme_light() +
+  geom_text(
+    data = df_percent,
+    aes(x = c(15, -25), y = c(300, 300), label = label, color = Category),
+    #inherit.aes = FALSE,
+    vjust = 2, hjust = 1.2,
+    size = 5) +
+  theme(legend.position = c(0.3, 0.8), legend.background = element_rect(fill = "white", color = "grey"))
+
+plot
+
+ggsave("CATEs_RMST180.png", 
+       plot, width = 6, height = 5)
+```
+
+
+## Final Plots: Respiratory Rate
+
+```{r}
+cutoff <- 0
+rhc_recco <- as.numeric(results_180$rmst > cutoff)
+
+#rhc_recco <- as.numeric(rhc_imputed$swang1 == 1)
+
+df_1 <- data.frame(resp_rate = rhc_imputed$resp1,
+                   rhc_recco)
+
+df_2 <- data.frame(resp_rate = rhc_imputed$resp1,
+                   rhc_recco = rep(2, dim(df_1)[1]))
+
+df_plot <- bind_rows(df_1, df_2)
+
+df_plot$rmst <- rep(results_180$rmst, 2)
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1,2),
+                            labels = c("RHC not recommended", "RHC recommended", "Total Population"))
+
+# df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+#                             levels = c(0,1,2),
+#                             labels = c("Did not get RHC", "Got RHC", "Total Population"))
+
+
+# df_binned <- df_plot %>%
+#   mutate(bin = cut(resp_rate, breaks = seq(0, 80, by = 2), include.lowest = TRUE)) %>%
+#   count(bin, rhc_recco)
+
+df_plot$rhc_recco <- as.factor(df_plot$rhc_recco)
+
+plot <- df_plot[1:nrow(df_1), ] %>%
+  ggplot(aes(x = resp_rate, fill = rhc_recco, color = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), alpha = 0.75, 
+                 position = position_dodge(width = 2), binwidth = 4) +
+  scale_color_manual( values = c("#ff6289", "#005b96", "#69b3a2")) +
+  scale_fill_manual( values = c("#ffc2cd", "#b3cde0", "#dde6d5")) +
+  geom_density(data = df_plot[(nrow(df_1)+1):nrow(df_plot), ],
+               aes(x = resp_rate), color = "#800080", alpha = 0, lwd = 0.6) +
+  geom_vline(xintercept = 20, color = "#343d46", lwd = 0.75) +
+  annotate("text", x = 22, y = 0.06, label = "Tachypynea (>20)", 
+           size = 4, color = "#343d46", fontface = "italic", hjust = 0) +
+  scale_x_continuous(breaks = seq(0,100,10)) +
+  labs(fill = "DeepSurv reccomendations", x = "Respiratory Rate") +
+  ggtitle("Distribution of Respiratory Rate by recommendation") +
+  guides(
+    fill = guide_legend(override.aes = list(
+      color = c("#ff6289", "#005b96", "#800080"),
+      fill  = c("#ffc2cd", "#b3cde0", "#800080")
+    )),
+    color = "none"  # hide the second color-only legend
+  ) +
+  theme_light()
+
+plot
+
+ggsave("Resp_rate.png",
+       plot, width = 8, height = 4.5)
+```
+
+
+## Final Plots: Mean Blood Pressure
+
+```{r}
+cutoff <- 0
+rhc_recco <- as.numeric(results_180$rmst > cutoff)
+
+# rhc_recco <- as.numeric(rhc_imputed$swang1 == 1)
+
+df_1 <- data.frame(mean_bp = rhc_imputed$meanbp1,
+                   rhc_recco)
+
+df_2 <- data.frame(mean_bp = rhc_imputed$meanbp1,
+                   rhc_recco = rep(2, dim(df_1)[1]))
+
+df_plot <- bind_rows(df_1, df_2)
+
+df_plot$rmst <- rep(results_180$rmst, 2)
+
+df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+                            levels = c(0,1,2),
+                            labels = c("RHC not recommended", "RHC recommended", "Total Population"))
+
+# df_plot$rhc_recco <- factor(df_plot$rhc_recco,
+#                             levels = c(0,1,2),
+#                             labels = c("Did not get RHC", "Got RHC", "Total Population"))
+
+plot <- df_plot[1:nrow(df_1), ] %>%
+  ggplot(aes(x = mean_bp, fill = rhc_recco, color = rhc_recco)) +
+  geom_histogram(aes(y = after_stat(density)), alpha = 0.75, 
+                 position = position_dodge(width = 5), binwidth = 10) +
+  scale_color_manual( values = c("#ff6289", "#005b96", "#69b3a2")) +
+  scale_fill_manual( values = c("#ffc2cd", "#b3cde0", "#dde6d5")) +
+  geom_density(data = df_plot[(nrow(df_1)+1):nrow(df_plot), ],
+               aes(x = mean_bp), color = "#800080", alpha = 0, lwd = 0.6) +
+  geom_vline(xintercept = 96, color = "#343d46", lwd = 0.75) +
+  annotate("text", x = 100, y = 0.016, label = "Hypertension (>96)", 
+           size = 4, color = "#343d46", fontface = "italic", hjust = 0) +
+  scale_x_continuous(breaks = seq(0,250,20)) +
+  labs(fill = "DeepSurv reccomendations", x = "Mean Arterial Pressure") +
+  ggtitle("Distribution of Mean Arterial Pressure by recommendation") +
+  guides(
+    fill = guide_legend(override.aes = list(
+      color = c("#ff6289", "#005b96", "#800080"),
+      fill  = c("#ffc2cd", "#b3cde0", "#800080")
+    )),
+    color = "none"  # hide the second color-only legend
+  ) +
+  theme_light()
+
+plot
+
+ggsave("Mean_bp.png",
+       plot, width = 8, height = 4.5)
+```
+
+
+## Final Plots: Treatment Recommendations
+
+```{r}
+survtime <- ifelse(is.na(rhc_imputed$dthdte), 
+                   pmax(rhc_imputed$lstctdte, rhc_imputed$dschdte) - rhc_imputed$sadmdte,
+                   rhc_imputed$dthdte - rhc_imputed$sadmdte)
+
+survtime180 <- pmin(180, survtime)
+survevent180 <- ifelse(survtime <= 180, survevent, 0)
+
+df_plot <- data.frame(time = survtime180, event = survevent180) 
+
+df_plot$treat_hat2 <- as.numeric(results_180$rmst > 0)
+df_plot$assigned_treat_hat2 <- as.numeric(rhc_imputed$swang1 == df_plot$treat_hat2)
+
+# Generating the Kaplan Meier Curves
+
+surv_Object <- Surv(df_plot$time, df_plot$event)
+comb_fit <- survfit(formula = surv_Object ~ assigned_treat_hat2, data = df_plot)
+summary(comb_fit)
+
+plot <- ggsurvplot(comb_fit, data = df_plot, conf.int = TRUE, pval = TRUE, #fun = "event",
+                   legend.labs = c("Anti-recommended Treatment", "Recommended Treatment"), legend.title = "Follows DeepSurv Recommendations",
+                   legend = c(0.8, 0.2),
+                   xlab = "Time (days from admission)", title = "KM Survival Curve - DeepSurv Treatment Recommendations")
+
+plot <- plot$plot +
+  scale_color_manual(values = c("#ff6289", "#005b96")) +
+  scale_fill_manual(values = c("#ffc2cd", "#b3cde0"))
+
+plot
+
+ggsave("Treatment_Recco2.png", 
+       plot, width = 8, height = 4.5)
+
+# RSF
+
+df_plot$treat_hat2 <- as.numeric(results_180_rsf$CATE_RMST > 0)
+df_plot$assigned_treat_hat2 <- as.numeric(rhc_imputed$swang1 == df_plot$treat_hat2)
+
+# Generating the Kaplan Meier Curves
+
+surv_Object <- Surv(df_plot$time, df_plot$event)
+comb_fit <- survfit(formula = surv_Object ~ assigned_treat_hat2, data = df_plot)
+summary(comb_fit)
+
+plot <- ggsurvplot(comb_fit, data = df_plot, conf.int = TRUE, pval = TRUE, #fun = "event",
+                   legend.labs = c("Anti-recommended Treatment", "Recommended Treatment"), legend.title = "Follows RSF Recommendations",
+                   legend = c(0.8, 0.2),
+                   xlab = "Time (days from admission)", title = "KM Survival Curve - RSF Treatment Recommendations")
+
+plot <- plot$plot +
+  scale_color_manual(values = c("#ff6289", "#005b96")) +
+  scale_fill_manual(values = c("#ffc2cd", "#b3cde0"))
+
+plot
+
+ggsave("RSF_Treatment_Recco.png", 
+       plot, width = 8, height = 6)
+```
