@@ -67,8 +67,8 @@ We implemented a multi-model survival analysis pipeline to explore treatment eff
   - `figures/` → All generated plots (PNG outputs)
   - `tables/` → Model outputs and summary CSVs
 - `presentation`
-  - `Exploring_Treatment_Effect_Heterogeneity.pdf` → Final research poster
-  - `Causal_Inference_Presentation.pptx` → Symposium presentation
+  - `final_poster.pdf` → Final research poster
+  - `final_presentation.pptx` → Symposium presentation
       - Contains the work of 3 subgroups:
           - *Estimating the Average Treatment Effect (ATE) of RHC* by Gabrielle Craft (Smith), Aditya Krishnan (UNC), and Akshay Kumar (Harvard)
           - *Binary Survival Machine Learning Methods Evaluating RHC* by Ria Bhandari (UC Davis) and Saptashwa Baisya (Indian Statistical Institute)
