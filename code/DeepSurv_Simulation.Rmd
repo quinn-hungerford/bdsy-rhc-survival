@@ -1,0 +1,254 @@
+---
+title: "DeepSurv Simulation"
+author: "Abhroneel Ghosh"
+date: "2025-07-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Original R code developed by Abhroneel Ghosh.
+R Markdown conversion, code cleanup, figure generation, and model comparison by Quinn Hungerford.
+
+
+## Loading Libaries
+
+```{r}
+# Importing libraries
+# For data manipulations
+library(tidyverse)
+library(Hmisc)
+library(reshape2)
+library(mice)
+library(caret)
+
+# For SUPPORT data
+
+library(readr)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(tableone)
+library(knitr)
+library(kableExtra)
+
+# For stats/logit
+library(MASS)
+library(tidymodels)
+library(pracma)
+
+# For survival analysis
+library(survival)
+library(survivalmodels)
+library(cmprsk)
+library(riskRegression)
+library(survminer)
+
+# Survival Forests
+library(grf)
+
+# For data viz
+library(ggplot2)
+library(ggfortify)
+library(gridExtra)
+
+# For DeepSurv
+library(dnn)
+#library(deepsurv)
+
+#installing pycox
+reticulate::install_miniconda()
+reticulate::use_miniconda("r-reticulate", required = TRUE)
+reticulate::py_install(c("pycox", "torch", "torchtuples"), pip = TRUE)
+```
+
+
+## Simulate Data
+
+```{r}
+set.seed(42)
+n <- 10000
+
+# 1. Simulate covariates
+X1 <- rnorm(n)
+X2 <- rbinom(n, 1, 0.5)
+
+# 2. Treatment assignment
+W <- rbinom(n, 1, 0.5)
+
+# 3. Treatment effect heterogeneity: tau(X)
+tau <- 0.5 + 1.5 * X1
+#tau <- 0.5
+#tau <- 0.25 + (X1**2 + 0.5*X2)
+
+# 4. Linear predictor for hazard
+lp <- 0.5 * X1 - 0.5 * X2 + W * tau
+
+# 5. Simulate baseline survival time using exponential baseline hazard:
+# Survival time T = -log(U) / (lambda * exp(lp))
+U <- runif(n)
+lambda0 <- 0.1  # baseline hazard rate
+T <- -log(U) / (lambda0 * exp(lp))
+
+# 6. Censoring
+C <- rexp(n, rate = 0.05)
+H <- rep(10, n)
+time <- pmin(T, C)
+time <- pmin(time, H)
+status <- as.numeric(T <= C)
+
+
+# 7. Final data frame
+sim_data <- data.frame(
+  time = time,
+  status = status,
+  X1 = X1,
+  X2 = X2,
+  W = W
+  #tau_true = tau
+)
+
+tau_true <- tau
+
+head(sim_data)
+```
+
+
+## Calculating True CATEs
+
+```{r}
+t <- seq(0,10,0.01)
+
+lp0 <- 0.5 * X1 - 0.5 * X2
+lp1 <- 0.5 * X1 - 0.5 * X2 + tau
+
+s0 <- data.frame(matrix(NA, nrow = length(lp0), ncol = length(t)))
+s1 <- data.frame(matrix(NA, nrow = length(lp0), ncol = length(t)))
+
+for (i in 1:length(lp0)) {
+  for (j in 1:length(t)) {
+    s0[i,j] = exp(-(lambda0 * exp(lp0[i]) * t[j]))
+  }
+}
+
+for (i in 1:length(lp1)) {
+  for (j in 1:length(t)) {
+    s1[i,j] = exp(-lambda0 * exp(lp1[i]) * t[j])
+  }
+}
+
+
+true_rmst_0 <- apply(s0, 1, function(surv) trapz(t, surv))
+true_rmst_1 <- apply(s1, 1, function(surv) trapz(t, surv))
+
+#true_rmst_0 <- trapz(t, s0)
+cate_true <- true_rmst_1 - true_rmst_0
+```
+
+
+## Fitting DeepSurv
+
+```{r}
+#installing pycox
+#reticulate::install_miniconda()
+#reticulate::use_miniconda("r-reticulate", required = TRUE)
+#reticulate::py_install(c("pycox", "torch", "torchtuples"), pip = TRUE)
+
+set.seed(102)
+
+x_train <- model.matrix(Surv(time, status) ~ . - 1, data = sim_data)
+y_train <- Surv(sim_data$time, sim_data$status)
+x_train <- as.data.frame(x_train)
+
+deepsurv_model2 <- deepsurv(x = x_train,
+                            y = y_train,
+                            #data = data,
+                            activation = "selu",
+                            num_nodes = c(44,1),
+                            batch_norm = TRUE,
+                            dropout = 0.255,
+                            epochs = 50,
+                            optimizer = 'adam',
+                            lr = 0.047,
+                            lr_decay = 0.002573,
+                            alpha = 0.859,
+                            lambd = 8.120)
+
+summary(deepsurv_model2)
+
+risk_scores <- predict(deepsurv_model2, newdata = x_train, type = "risk")
+cidx <- concordance(y_train ~ as.numeric(-risk_scores))$concordance
+cidx
+
+
+hypo_0 <- sim_data[, c(3,4,5)]
+hypo_0$W <- 0
+
+hypo_1 <- sim_data[, c(3,4,5)]
+hypo_1$W <- 1
+
+surv_est0 <- predict(deepsurv_model2, hypo_0, type = 'survival')
+t0 <- as.numeric(colnames(surv_est0))
+rmst_values_0 <- apply(surv_est0, 1, function(surv) trapz(t0, surv))
+
+surv_est1 <- predict(deepsurv_model2, hypo_1, type = 'survival')
+t1 <- as.numeric(colnames(surv_est1))
+rmst_values_1 <- apply(surv_est1, 1, function(surv) trapz(t1, surv))
+
+cate_deepsurv <- rmst_values_1 - rmst_values_0
+```
+
+
+## Fitting CSF
+
+```{r}
+X <- sim_data[, c(3,4)]
+W <- sim_data$W
+D <- sim_data$status
+Y <- sim_data$time
+
+csf_model <- causal_survival_forest(X = X, Y = Y, W = W, D = D,
+                                    horizon = 10,
+                                    target = 'RMST')
+
+cate_csf <- predict(csf_model)$predictions
+```
+
+
+## Creating Final Histograms
+
+```{r}
+df_plot <- data.frame(cate_true, cate_deepsurv, cate_csf)
+
+write.csv(df_plot, file = "CATES1.csv", row.names = FALSE)
+
+df_plot <- melt(df_plot)
+head(df_plot)
+
+df_plot$variable <- factor(df_plot$variable,
+                            levels = c("cate_true", "cate_deepsurv", "cate_csf"),
+                            labels = c("True Value", "DeepSurv", "CSF"))
+
+plot <- df_plot %>%
+  ggplot(aes(x = value, color = variable, fill = variable)) +
+  geom_histogram(position = position_dodge(width = 0.12), alpha = 0.6, binwidth = 0.2) +
+  scale_fill_manual( values = c("#ffc2cd", "#b3cde0", "#dde6d5")) +
+  scale_color_manual( values = c("#ff6289", "#005b96", "#69b3a2")) +
+  labs(fill = "CATE Model", x = "CATE - RMST") +
+  ggtitle("Distribution of Simulated CATEs") +
+  guides(
+    fill = guide_legend(override.aes = list(
+      color = c("#ff6289", "#005b96", "#69b3a2"),
+      fill  = c("#ffc2cd", "#b3cde0", "#dde6d5")
+    )),
+    color = "none"  # hide the second color-only legend
+  ) +
+  theme_light()
+
+plot
+
+ggsave("CATES1.png",
+       plot, width = 8, height = 6)
+```
