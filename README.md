@@ -57,7 +57,7 @@ We implemented a multi-model survival analysis pipeline to explore treatment eff
   - `Dictionary.xlsx` → SUPPORT dataset dictionary with variable definitions
 - `code/`  
   - `DataCleaning.Rmd` → Data preparation (Written by Leo Hickey)
-  - `CSF.Rmd` → Causal Survival Forests (Written by Quinn Hungerford, edited by Isabella Summe)
+  - `CSF.Rmd` → Causal Survival Forests (Written by Quinn Hungerford and Isabella Summe)
   - `RSF.ipynb` → Random Survival Forests (Written by Isabella Summe, edited by Quinn Hungerford)
   - `DeepSurv.Rmd` → DeepSurv base model (Written by Abhroneel Ghosh, edited by Quinn Hungerford)
   - `DeepSurv_CART.Rmd` → DeepSurv decision tree visualization (Written by Abhroneel Ghosh, edited by Quinn Hungerford)
